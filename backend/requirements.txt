@@ -1,12 +1,6 @@
-fastapi==0.115.11
-uvicorn[standard]==0.34.0
-pydantic==2.10.6
-pydantic-settings==2.8.1
-python-multipart==0.0.20
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.27,<1.0
 
-SQLAlchemy==2.0.38
-
-opencv-python==4.11.0.86
-numpy==2.2.3
-
-opcua==0.98.13
+pydantic>=2.6,<3.0
+pydantic-settings>=2.2,<3.0
+python-dotenv>=1.0,<2.0
