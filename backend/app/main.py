@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
+from .routes.parts import router as parts_router
 
 app = FastAPI(title="Parts/Zones Server")
 
@@ -20,6 +21,10 @@ app.add_middleware(
 # Static mount: serve C:\assets as /assets
 assets_root = Path(settings.assets_root)
 app.mount("/assets", StaticFiles(directory=str(assets_root)), name="assets")
+
+# API routes
+app.include_router(parts_router)
+
 
 @app.get("/api/health")
 def health():
