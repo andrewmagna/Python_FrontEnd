@@ -27,8 +27,11 @@ export default function AdminEditor() {
   const [partUsedZoneIdsOtherSections, setPartUsedZoneIdsOtherSections] =
     useState([]);
   const [zoneIdsByOtherSection, setZoneIdsByOtherSection] = useState({});
+  const [zoom, setZoom] = useState(1);
+  const [panInfo, setPanInfo] = useState(null);
 
   const svgRef = useRef(null);
+  const viewerRef = useRef(null);
 
   useEffect(() => {
     async function checkAndLoad() {
@@ -77,6 +80,8 @@ export default function AdminEditor() {
       setRenumberInput("");
       setEditMode("move");
       setUnsavedChanges(false);
+      setZoom(1);
+      setPanInfo(null);
       setLoading(false);
     }
 
@@ -138,6 +143,34 @@ export default function AdminEditor() {
     navigate(`/admin/editor/${partId}/${targetSection}?return=${returnTarget}`);
   }
 
+  function clampZoom(value) {
+    return Math.max(0.5, Math.min(3, Number(value.toFixed(2))));
+  }
+
+  function zoomIn() {
+    setZoom((prev) => clampZoom(prev + 0.1));
+  }
+
+  function zoomOut() {
+    setZoom((prev) => clampZoom(prev - 0.1));
+  }
+
+  function resetZoom() {
+    setZoom(1);
+    setPanInfo(null);
+    if (viewerRef.current) {
+      viewerRef.current.scrollLeft = 0;
+      viewerRef.current.scrollTop = 0;
+    }
+  }
+
+  function onViewerWheel(e) {
+    if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      setZoom((prev) => clampZoom(prev + (e.deltaY < 0 ? 0.1 : -0.1)));
+    }
+  }
+
   function svgPointFromEvent(svg, e) {
     const pt = svg.createSVGPoint();
     pt.x = e.clientX;
@@ -151,6 +184,55 @@ export default function AdminEditor() {
     setSelectedVertexIndex(null);
     setRenumberInput("");
     setEditMode("move");
+  }
+
+  function startPan(e) {
+    if (zoom <= 1) return;
+    if (!viewerRef.current) return;
+
+    setPanInfo({
+      startX: e.clientX,
+      startY: e.clientY,
+      scrollLeft: viewerRef.current.scrollLeft,
+      scrollTop: viewerRef.current.scrollTop,
+      moved: false,
+    });
+  }
+
+  function onViewerPointerDown(e) {
+    if (dragInfo) return;
+    if (e.button !== 0) return;
+    startPan(e);
+  }
+
+  function onViewerPointerMove(e) {
+    if (!panInfo || !viewerRef.current) return;
+
+    const dx = e.clientX - panInfo.startX;
+    const dy = e.clientY - panInfo.startY;
+
+    viewerRef.current.scrollLeft = panInfo.scrollLeft - dx;
+    viewerRef.current.scrollTop = panInfo.scrollTop - dy;
+
+    if (!panInfo.moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
+      setPanInfo((prev) =>
+        prev
+          ? {
+              ...prev,
+              moved: true,
+            }
+          : prev,
+      );
+    }
+  }
+
+  function onViewerPointerUp() {
+    if (panInfo) {
+      if (panInfo.moved) {
+        setSuppressNextSvgClick(true);
+      }
+      setPanInfo(null);
+    }
   }
 
   function onSvgClick(e) {
@@ -590,119 +672,171 @@ export default function AdminEditor() {
         }}
       >
         <div style={{ minWidth: 0 }}>
-          <div
-            style={{
-              position: "relative",
-              border: "1px solid #ccc",
-              background: "#f8f8f8",
-              overflow: "hidden",
-            }}
-          >
-            <img
-              src={imageUrl}
-              style={{
-                display: "block",
-                width: "100%",
-                height: "auto",
-              }}
-            />
-
-            <svg
-              ref={svgRef}
-              viewBox={`0 0 ${imageSize.width} ${imageSize.height}`}
+          <div style={{ position: "relative" }}>
+            <div
               style={{
                 position: "absolute",
-                inset: 0,
-                width: "100%",
-                height: "100%",
-                cursor: dragInfo
-                  ? "grabbing"
-                  : selectedZoneId && editMode === "insert"
-                    ? "copy"
-                    : selectedZoneId && editMode === "move"
-                      ? "move"
-                      : selectedZoneId
-                        ? "default"
-                        : "crosshair",
+                top: 8,
+                right: 8,
+                zIndex: 10,
+                display: "flex",
+                gap: 6,
+                alignItems: "center",
+                background: "rgba(255,255,255,0.92)",
+                border: "1px solid #ddd",
+                borderRadius: 8,
+                padding: "6px 8px",
               }}
-              onClick={onSvgClick}
-              onPointerMove={onSvgPointerMove}
-              onPointerUp={onSvgPointerUp}
-              onPointerLeave={onSvgPointerUp}
             >
-              {zones.map((z) => {
-                const selected = z.zone_id === selectedZoneId;
-                const c = centroid(z.points);
+              <button onClick={zoomOut}>-</button>
+              <div style={{ minWidth: 52, textAlign: "center", fontSize: 14 }}>
+                {Math.round(zoom * 100)}%
+              </div>
+              <button onClick={zoomIn}>+</button>
+              <button onClick={resetZoom}>Reset</button>
+            </div>
 
-                return (
-                  <g key={z.zone_id}>
-                    <polygon
-                      points={z.points.map((p) => p.join(",")).join(" ")}
-                      fill={
-                        selected
-                          ? "rgba(0,140,255,0.28)"
-                          : "rgba(0,140,255,0.18)"
-                      }
-                      stroke={
-                        selected ? "rgba(0,80,200,1)" : "rgba(0,100,220,0.95)"
-                      }
-                      strokeWidth={selected ? selectedZoneStrokeWidth : zoneStrokeWidth}
-                      onClick={(e) => onZoneClick(e, z.zone_id)}
-                      onPointerDown={(e) => onZonePointerDown(e, z.zone_id)}
-                      style={{
-                        cursor:
-                          selected && editMode === "move" ? "move" : "pointer",
-                      }}
-                    />
+            <div
+              ref={viewerRef}
+              onWheel={onViewerWheel}
+              onPointerDown={onViewerPointerDown}
+              onPointerMove={onViewerPointerMove}
+              onPointerUp={onViewerPointerUp}
+              onPointerLeave={onViewerPointerUp}
+              style={{
+                position: "relative",
+                border: "1px solid #ccc",
+                background: "#f8f8f8",
+                overflow: "auto",
+                maxHeight: "75vh",
+                cursor: panInfo ? "grabbing" : zoom > 1 ? "grab" : "default",
+              }}
+            >
+              <div
+                style={{
+                  position: "relative",
+                  width: `${zoom * 100}%`,
+                }}
+              >
+                <img
+                  src={imageUrl}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    height: "auto",
+                  }}
+                />
 
-                    <text
-                      x={c.x}
-                      y={c.y}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      fontSize={zoneLabelFontSize}
-                      fill="rgba(0,70,140,0.95)"
-                      style={{ pointerEvents: "none", userSelect: "none" }}
-                    >
-                      {z.zone_id}
-                    </text>
+                <svg
+                  ref={svgRef}
+                  viewBox={`0 0 ${imageSize.width} ${imageSize.height}`}
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    width: "100%",
+                    height: "100%",
+                    cursor: dragInfo
+                      ? "grabbing"
+                      : selectedZoneId && editMode === "insert"
+                        ? "copy"
+                        : selectedZoneId && editMode === "move"
+                          ? "move"
+                          : selectedZoneId
+                            ? "default"
+                            : panInfo
+                              ? "grabbing"
+                              : zoom > 1
+                                ? "grab"
+                                : "crosshair",
+                  }}
+                  onClick={onSvgClick}
+                  onPointerMove={onSvgPointerMove}
+                  onPointerUp={onSvgPointerUp}
+                  onPointerLeave={onSvgPointerUp}
+                >
+                  {zones.map((z) => {
+                    const selected = z.zone_id === selectedZoneId;
+                    const c = centroid(z.points);
 
-                    {selected &&
-                      z.points.map((p, i) => (
+                    return (
+                      <g key={z.zone_id}>
+                        <polygon
+                          points={z.points.map((p) => p.join(",")).join(" ")}
+                          fill={
+                            selected
+                              ? "rgba(0,140,255,0.28)"
+                              : "rgba(0,140,255,0.18)"
+                          }
+                          stroke={
+                            selected ? "rgba(0,80,200,1)" : "rgba(0,100,220,0.95)"
+                          }
+                          strokeWidth={selected ? selectedZoneStrokeWidth : zoneStrokeWidth}
+                          onClick={(e) => onZoneClick(e, z.zone_id)}
+                          onPointerDown={(e) => onZonePointerDown(e, z.zone_id)}
+                          style={{
+                            cursor:
+                              selected && editMode === "move" ? "move" : "pointer",
+                          }}
+                        />
+
+                        <text
+                          x={c.x}
+                          y={c.y}
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          fontSize={zoneLabelFontSize}
+                          fill="rgba(0,70,140,0.95)"
+                          style={{ pointerEvents: "none", userSelect: "none" }}
+                        >
+                          {z.zone_id}
+                        </text>
+
+                        {selected &&
+                          z.points.map((p, i) => (
+                            <circle
+                              key={i}
+                              cx={p[0]}
+                              cy={p[1]}
+                              r={selectedVertexIndex === i ? selectedHandleRadius : handleRadius}
+                              fill={selectedVertexIndex === i ? "#dbeafe" : "white"}
+                              stroke="rgba(0,80,200,1)"
+                              strokeWidth={handleStrokeWidth}
+                              onPointerDown={(e) =>
+                                onVertexPointerDown(e, z.zone_id, i)
+                              }
+                              style={{
+                                cursor: editMode === "move" ? "grab" : "pointer",
+                              }}
+                            />
+                          ))}
+                      </g>
+                    );
+                  })}
+
+                  {draftPoints.length > 0 && (
+                    <>
+                      <polyline
+                        points={draftPoints.map((p) => p.join(",")).join(" ")}
+                        fill="none"
+                        stroke="orange"
+                        strokeWidth={draftStrokeWidth}
+                      />
+                      {draftPoints.map((p, i) => (
                         <circle
                           key={i}
                           cx={p[0]}
                           cy={p[1]}
-                          r={selectedVertexIndex === i ? selectedHandleRadius : handleRadius}
-                          fill={selectedVertexIndex === i ? "#dbeafe" : "white"}
-                          stroke="rgba(0,80,200,1)"
-                          strokeWidth={handleStrokeWidth}
-                          onPointerDown={(e) =>
-                            onVertexPointerDown(e, z.zone_id, i)
-                          }
-                          style={{
-                            cursor: editMode === "move" ? "grab" : "pointer",
-                          }}
+                          r={draftHandleRadius}
+                          fill="orange"
+                          stroke="#d97706"
+                          strokeWidth={Math.max(2, draftStrokeWidth * 0.75)}
                         />
                       ))}
-                  </g>
-                );
-              })}
-
-              {draftPoints.length > 0 && (
-                <>
-                  <polyline
-                    points={draftPoints.map((p) => p.join(",")).join(" ")}
-                    fill="none"
-                    stroke="orange"
-                    strokeWidth={draftStrokeWidth}
-                  />
-                  {draftPoints.map((p, i) => (
-                    <circle key={i} cx={p[0]} cy={p[1]} r={draftHandleRadius} fill="orange" stroke="#d97706" strokeWidth={Math.max(2, draftStrokeWidth * 0.75)} />
-                  ))}
-                </>
-              )}
-            </svg>
+                    </>
+                  )}
+                </svg>
+              </div>
+            </div>
           </div>
         </div>
 
