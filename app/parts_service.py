@@ -34,6 +34,42 @@ def _read_image_size(image_path: Path) -> Dict[str, int]:
     return {"width": int(width), "height": int(height)}
 
 
+def _normalize_zone(zone: Dict[str, Any]) -> Dict[str, Any]:
+    zone_id = zone.get("zone_id")
+    points = zone.get("points", [])
+    orientation = zone.get("orientation")
+
+    if orientation not in (1, 2, 3, 4):
+        orientation = None
+
+    return {
+        "zone_id": zone_id,
+        "points": points,
+        "orientation": orientation,
+    }
+
+
+def _normalize_zones(zones: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+
+    for zone in zones:
+        if not isinstance(zone, dict):
+            continue
+
+        zone_id = zone.get("zone_id")
+        points = zone.get("points", [])
+
+        if not isinstance(zone_id, int):
+            continue
+
+        if not isinstance(points, list) or len(points) < 3:
+            continue
+
+        normalized.append(_normalize_zone(zone))
+
+    return normalized
+
+
 def _load_section_zone_payload(zones_file: Path, clean_image_path: Path) -> Dict[str, Any]:
     image_size = _read_image_size(clean_image_path)
     zones: List[Dict[str, Any]] = []
@@ -47,7 +83,7 @@ def _load_section_zone_payload(zones_file: Path, clean_image_path: Path) -> Dict
 
     try:
         data = json.loads(zones_file.read_text(encoding="utf-8"))
-        zones = data.get("zones", [])
+        zones = _normalize_zones(data.get("zones", []))
         image_size = data.get("image_size", image_size)
         return {
             "zones": zones,

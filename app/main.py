@@ -13,7 +13,13 @@ from pydantic import BaseModel
 from app.admin_auth import admin_dep, clear_admin_cookie, is_admin, set_admin_cookie
 from app.audit import init_db, log_apply
 from app.config_store import AppConfig, load_config, save_config, validate_parts_root
-from app.opc_service import connect, is_connected, write_zones
+from app.opc_service import (
+    connect,
+    write_zones,
+    is_connected,
+    get_table_orientation,
+    get_table_orientation_degrees,
+)
 from app.overlay_import import import_polygons_from_overlay
 from app.parts_service import get_part, scan_parts
 
@@ -95,6 +101,18 @@ def _read_image_size(image_path: Path) -> dict[str, int]:
     return {"width": int(width), "height": int(height)}
 
 
+def _normalize_zone_for_response(zone: dict[str, Any]) -> dict[str, Any]:
+    orientation = zone.get("orientation")
+    if orientation not in (1, 2, 3, 4):
+        orientation = None
+
+    return {
+        "zone_id": zone.get("zone_id"),
+        "points": zone.get("points", []),
+        "orientation": orientation,
+    }
+
+
 @app.get("/api/admin/status")
 def admin_status(request: Request):
     return {"admin": is_admin(request)}
@@ -162,22 +180,13 @@ def load_section_zones(zones_path: Path) -> list[dict[str, Any]]:
 
     try:
         data = json.loads(zones_path.read_text(encoding="utf-8"))
-        return data.get("zones", [])
+        zones = data.get("zones", [])
+        return [z for z in zones if isinstance(z, dict)]
     except Exception:
         return []
 
 
 def collect_part_zone_ids(part_dir: Path, exclude_section_index: int | None = None) -> dict[str, Any]:
-    """
-    Returns:
-    {
-      "used_ids": [1, 2, 11],
-      "by_section": {
-        1: [1, 2],
-        3: [11]
-      }
-    }
-    """
     zones_dir = part_dir / "zones"
     used_ids: set[int] = set()
     by_section: dict[int, list[int]] = {}
@@ -228,10 +237,15 @@ def editor_get_section(part_id: str, section_index: int):
     if zones_path.exists():
         try:
             loaded = json.loads(zones_path.read_text(encoding="utf-8"))
+            raw_zones = loaded.get("zones", [])
             zones_payload = {
                 "image": loaded.get("image", image_path.name),
                 "image_size": loaded.get("image_size", _read_image_size(image_path)),
-                "zones": loaded.get("zones", []),
+                "zones": [
+                    _normalize_zone_for_response(z)
+                    for z in raw_zones
+                    if isinstance(z, dict)
+                ],
             }
         except Exception:
             pass
@@ -245,10 +259,12 @@ def editor_get_section(part_id: str, section_index: int):
         ]
     )
 
+    mtime = int(image_path.stat().st_mtime)
+
     return {
         "part_id": part_id,
         "section_index": section_index,
-        "image_url": f"/parts/{part_id}/sections/section{section_index}_clean.png",
+        "image_url": f"/parts/{part_id}/sections/section{section_index}_clean.png?v={mtime}",
         "image_size": zones_payload.get("image_size", _read_image_size(image_path)),
         "zones": zones_payload.get("zones", []),
         "part_used_zone_ids_other_sections": part_usage["used_ids"],
@@ -273,10 +289,15 @@ def editor_save_section(part_id: str, section_index: int, req: EditorSaveRequest
     zones_path = zones_dir / f"section{section_index}.json"
 
     current_ids: list[int] = []
+    cleaned_zones: list[dict[str, Any]] = []
 
     for z in req.zones:
+        if not isinstance(z, dict):
+            raise HTTPException(status_code=400, detail="Each zone must be an object")
+
         zone_id = z.get("zone_id")
         points = z.get("points", [])
+        orientation = z.get("orientation")
 
         if not isinstance(zone_id, int):
             raise HTTPException(status_code=400, detail="Each zone must have an integer zone_id")
@@ -293,6 +314,7 @@ def editor_save_section(part_id: str, section_index: int, req: EditorSaveRequest
                 detail=f"Zone {zone_id} must have at least 3 points",
             )
 
+        cleaned_points: list[list[int]] = []
         for pt in points:
             if (
                 not isinstance(pt, list)
@@ -304,8 +326,22 @@ def editor_save_section(part_id: str, section_index: int, req: EditorSaveRequest
                     status_code=400,
                     detail=f"Zone {zone_id} contains an invalid point",
                 )
+            cleaned_points.append([round(pt[0]), round(pt[1])])
+
+        if orientation is not None and orientation not in (1, 2, 3, 4):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Zone {zone_id} has an invalid orientation",
+            )
 
         current_ids.append(zone_id)
+        cleaned_zones.append(
+            {
+                "zone_id": zone_id,
+                "points": cleaned_points,
+                "orientation": orientation,
+            }
+        )
 
     if len(current_ids) != len(set(current_ids)):
         raise HTTPException(status_code=400, detail="Duplicate zone IDs exist within this section")
@@ -323,7 +359,7 @@ def editor_save_section(part_id: str, section_index: int, req: EditorSaveRequest
     payload = {
         "image": req.image or image_path.name,
         "image_size": req.image_size or _read_image_size(image_path),
-        "zones": req.zones,
+        "zones": cleaned_zones,
     }
 
     zones_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -352,37 +388,31 @@ def editor_import_overlay(part_id: str, section_index: int):
 
         clean_height, clean_width = clean_img.shape[:2]
 
-        overlay_width = result["image_size"]["width"]
-        overlay_height = result["image_size"]["height"]
+        imported_zones = []
+        for zone in result.get("zones", []):
+            if not isinstance(zone, dict):
+                continue
 
-        if overlay_width <= 0 or overlay_height <= 0:
-            raise HTTPException(status_code=500, detail="Overlay import returned invalid image size")
+            zone_id = zone.get("zone_id")
+            points = zone.get("points", [])
 
-        scale_x = clean_width / overlay_width
-        scale_y = clean_height / overlay_height
+            if not isinstance(zone_id, int):
+                continue
+            if not isinstance(points, list) or len(points) < 3:
+                continue
 
-        scaled_zones = []
-        for zone in result["zones"]:
-            scaled_points = [
-                [round(p[0] * scale_x), round(p[1] * scale_y)]
-                for p in zone["points"]
-            ]
-            scaled_zones.append(
+            imported_zones.append(
                 {
-                    "zone_id": zone["zone_id"],
-                    "points": scaled_points,
+                    "zone_id": zone_id,
+                    "points": [[round(p[0]), round(p[1])] for p in points],
+                    "orientation": None,
                 }
             )
 
         return {
             "image_size": {"width": clean_width, "height": clean_height},
-            "zones": scaled_zones,
-            "debug": {
-                "overlay_size": {"width": overlay_width, "height": overlay_height},
-                "clean_size": {"width": clean_width, "height": clean_height},
-                "scale_x": scale_x,
-                "scale_y": scale_y,
-            },
+            "zones": imported_zones,
+            "debug": result.get("debug", {}),
         }
 
     except FileNotFoundError as e:
@@ -400,4 +430,11 @@ def health():
 
 @app.get("/api/opc/status")
 def opc_status():
-    return {"connected": is_connected()}
+    orientation = get_table_orientation()
+    orientation_degrees = get_table_orientation_degrees()
+
+    return {
+        "connected": is_connected(),
+        "table_orientation": orientation,
+        "table_orientation_degrees": orientation_degrees,
+    }
