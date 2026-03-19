@@ -51,14 +51,14 @@ export default function AppHeader() {
       style={{
         width: "100%",
         boxSizing: "border-box",
-        padding: "10px 20px 0",
+        padding: "4px 16px 0",
         background: "#f8fafc",
       }}
     >
       <div
         style={{
           position: "relative",
-          minHeight: 72,
+          minHeight: 52,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -68,8 +68,9 @@ export default function AppHeader() {
           src={bannerImg}
           alt="MICA banner"
           style={{
-            maxWidth: "min(820px, calc(100vw - 120px))",
-            width: "100%",
+            maxWidth: "min(520px, calc(100vw - 110px))",
+            maxHeight: 48,
+            width: "auto",
             height: "auto",
             display: "block",
             objectFit: "contain",
@@ -85,12 +86,12 @@ export default function AppHeader() {
             right: 0,
             top: "50%",
             transform: "translateY(-50%)",
-            width: 46,
-            height: 46,
-            minWidth: 46,
-            minHeight: 46,
+            width: 40,
+            height: 40,
+            minWidth: 40,
+            minHeight: 40,
             padding: 0,
-            borderRadius: 12,
+            borderRadius: 10,
             border: "1px solid #e5e7eb",
             background: isAdmin ? "#eff6ff" : "#ffffff",
             display: "flex",
@@ -104,7 +105,8 @@ export default function AppHeader() {
           onMouseEnter={(e) => {
             e.currentTarget.style.borderColor = "#93c5fd";
             e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.08)";
-            e.currentTarget.style.transform = "translateY(-50%) translateY(-1px)";
+            e.currentTarget.style.transform =
+              "translateY(-50%) translateY(-1px)";
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.borderColor = "#e5e7eb";
@@ -123,8 +125,8 @@ function LoginIcon() {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
-      width="20"
-      height="20"
+      width="18"
+      height="18"
       viewBox="0 0 24 24"
       aria-hidden="true"
       style={{ display: "block" }}
@@ -145,8 +147,8 @@ function LogoutIcon() {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
-      width="20"
-      height="20"
+      width="18"
+      height="18"
       viewBox="0 0 24 24"
       aria-hidden="true"
       style={{ display: "block" }}

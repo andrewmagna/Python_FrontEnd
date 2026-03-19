@@ -110,108 +110,112 @@ export default function PartsGrid() {
             alignItems: "stretch",
           }}
         >
-          {parts.map((p) => (
-            <button
-              key={p.part_id}
-              onClick={() => navigate(`/part/${p.part_id}`)}
-              style={{
-                textAlign: "left",
-                border: "1px solid #d1d5db",
-                borderRadius: 16,
-                padding: 14,
-                cursor: "pointer",
-                background: "#ffffff",
-                display: "flex",
-                flexDirection: "column",
-                gap: 12,
-                boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-                transition:
-                  "transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.transform = "translateY(-2px)";
-                e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,0,0,0.08)";
-                e.currentTarget.style.borderColor = "#93c5fd";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.transform = "translateY(0)";
-                e.currentTarget.style.boxShadow = "0 1px 2px rgba(0,0,0,0.04)";
-                e.currentTarget.style.borderColor = "#d1d5db";
-              }}
-            >
-              <div
+          {parts.map((p) => {
+            const isConfigured = !!p.configured;
+
+            return (
+              <button
+                key={p.part_id}
+                onClick={() => navigate(`/part/${p.part_id}`)}
                 style={{
-                  width: "100%",
-                  aspectRatio: "4 / 3",
+                  textAlign: "left",
+                  border: "1px solid #d1d5db",
+                  borderRadius: 16,
+                  padding: 14,
+                  cursor: "pointer",
+                  background: "#ffffff",
                   display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  overflow: "hidden",
-                  borderRadius: 12,
-                  background: "#f8fafc",
-                  border: "1px solid #e5e7eb",
+                  flexDirection: "column",
+                  gap: 12,
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                  transition:
+                    "transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.transform = "translateY(-2px)";
+                  e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,0,0,0.08)";
+                  e.currentTarget.style.borderColor = "#93c5fd";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.transform = "translateY(0)";
+                  e.currentTarget.style.boxShadow = "0 1px 2px rgba(0,0,0,0.04)";
+                  e.currentTarget.style.borderColor = "#d1d5db";
                 }}
               >
-                <img
-                  src={p.thumb_url}
-                  alt={p.display_name}
-                  style={{
-                    maxWidth: "100%",
-                    maxHeight: "100%",
-                    objectFit: "contain",
-                    display: "block",
-                  }}
-                />
-              </div>
-
-              <div>
                 <div
                   style={{
-                    fontWeight: 700,
-                    fontSize: 17,
-                    color: "#111827",
-                    lineHeight: 1.25,
-                    marginBottom: 6,
-                  }}
-                >
-                  {p.display_name}
-                </div>
-
-                <div
-                  style={{
-                    fontSize: 13,
-                    color: "#6b7280",
+                    width: "100%",
+                    aspectRatio: "4 / 3",
                     display: "flex",
-                    gap: 8,
-                    flexWrap: "wrap",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    overflow: "hidden",
+                    borderRadius: 12,
+                    background: "#f8fafc",
+                    border: "1px solid #e5e7eb",
                   }}
                 >
-                  <span
+                  <img
+                    src={p.thumb_url}
+                    alt={p.display_name}
                     style={{
-                      background: "#f3f4f6",
-                      borderRadius: 999,
-                      padding: "4px 8px",
-                      fontWeight: 600,
+                      maxWidth: "100%",
+                      maxHeight: "100%",
+                      objectFit: "contain",
+                      display: "block",
                     }}
-                  >
-                    {p.section_count} section{p.section_count === 1 ? "" : "s"}
-                  </span>
-
-                  <span
-                    style={{
-                      background: p.configured ? "#dcfce7" : "#fef3c7",
-                      color: p.configured ? "#166534" : "#92400e",
-                      borderRadius: 999,
-                      padding: "4px 8px",
-                      fontWeight: 700,
-                    }}
-                  >
-                    {p.configured ? "Configured" : "Needs setup"}
-                  </span>
+                  />
                 </div>
-              </div>
-            </button>
-          ))}
+
+                <div>
+                  <div
+                    style={{
+                      fontWeight: 700,
+                      fontSize: 17,
+                      color: "#111827",
+                      lineHeight: 1.25,
+                      marginBottom: 6,
+                    }}
+                  >
+                    {p.display_name}
+                  </div>
+
+                  <div
+                    style={{
+                      fontSize: 13,
+                      color: "#6b7280",
+                      display: "flex",
+                      gap: 8,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <span
+                      style={{
+                        background: "#f3f4f6",
+                        borderRadius: 999,
+                        padding: "4px 8px",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {p.section_count} section{p.section_count === 1 ? "" : "s"}
+                    </span>
+
+                    <span
+                      style={{
+                        background: isConfigured ? "#dcfce7" : "#fef3c7",
+                        color: isConfigured ? "#166534" : "#92400e",
+                        borderRadius: 999,
+                        padding: "4px 8px",
+                        fontWeight: 700,
+                      }}
+                    >
+                      {isConfigured ? "Configured" : "Needs setup"}
+                    </span>
+                  </div>
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

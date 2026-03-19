@@ -70,7 +70,9 @@ def _normalize_zones(zones: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return normalized
 
 
-def _load_section_zone_payload(zones_file: Path, clean_image_path: Path) -> Dict[str, Any]:
+def _load_section_zone_payload(
+    zones_file: Path, clean_image_path: Path
+) -> Dict[str, Any]:
     image_size = _read_image_size(clean_image_path)
     zones: List[Dict[str, Any]] = []
 
@@ -88,7 +90,7 @@ def _load_section_zone_payload(zones_file: Path, clean_image_path: Path) -> Dict
         return {
             "zones": zones,
             "image_size": image_size,
-            "has_zones": True,
+            "has_zones": len(zones) > 0,
         }
     except Exception:
         return {
@@ -173,16 +175,18 @@ def scan_parts() -> List[Dict[str, Any]]:
         zones_dir = part_dir / "zones"
 
         existing_sections = _discover_existing_sections(sections_dir)
+        missing_zones_sections: List[int] = []
 
-        if not existing_sections:
-            configured = False
-        else:
-            configured = True
-            for i in existing_sections:
-                zone_file = zones_dir / f"section{i}.json"
-                if not zone_file.exists():
-                    configured = False
-                    break
+        for i in existing_sections:
+            clean_path = sections_dir / f"section{i}_clean.png"
+            zone_file = zones_dir / f"section{i}.json"
+
+            zone_payload = _load_section_zone_payload(zone_file, clean_path)
+
+            if not zone_payload["has_zones"]:
+                missing_zones_sections.append(i)
+
+        configured = len(existing_sections) > 0 and len(missing_zones_sections) == 0
 
         parts.append(
             {
@@ -192,6 +196,7 @@ def scan_parts() -> List[Dict[str, Any]]:
                 "sections": existing_sections,
                 "section_count": len(existing_sections),
                 "configured": configured,
+                "missing_zones_sections": missing_zones_sections,
             }
         )
 

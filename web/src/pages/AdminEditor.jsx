@@ -46,6 +46,7 @@ export default function AdminEditor() {
   const [zoneIdsByOtherSection, setZoneIdsByOtherSection] = useState({});
   const [zoom, setZoom] = useState(1);
   const [panInfo, setPanInfo] = useState(null);
+  const [workspaceHeight, setWorkspaceHeight] = useState(520);
 
   const [showOrientationPanel, setShowOrientationPanel] = useState(false);
   const [orientationEditMode, setOrientationEditMode] = useState("assign");
@@ -56,6 +57,8 @@ export default function AdminEditor() {
     useState([]);
   const [orientationReviewMode, setOrientationReviewMode] = useState(false);
 
+  const pageRef = useRef(null);
+  const workspaceRef = useRef(null);
   const svgRef = useRef(null);
   const viewerRef = useRef(null);
 
@@ -328,26 +331,44 @@ export default function AdminEditor() {
     return Math.max(0.2, Math.min(3, Number(value.toFixed(2))));
   }
 
+  function measureWorkspaceHeight() {
+    if (!workspaceRef.current) return;
+
+    const rect = workspaceRef.current.getBoundingClientRect();
+    const nextHeight = Math.max(320, Math.floor(window.innerHeight - rect.top - 10));
+    setWorkspaceHeight(nextHeight);
+  }
+
   function getFitZoom() {
     const viewer = viewerRef.current;
     if (!viewer || !imageSize.width || !imageSize.height) {
       return 1;
     }
 
-    const viewerWidth = viewer.clientWidth;
-    const viewerHeight = viewer.clientHeight;
+    const viewerWidth = viewer.clientWidth - 24;
+    const viewerHeight = viewer.clientHeight - 24;
 
-    if (!viewerWidth || !viewerHeight) {
+    if (viewerWidth <= 0 || viewerHeight <= 0) {
       return 1;
     }
 
     const fitWidth = viewerWidth / imageSize.width;
     const fitHeight = viewerHeight / imageSize.height;
-    const baseFit = Math.min(fitWidth, fitHeight);
-    const boostedFit = baseFit * 0.95;
+    const fitZoom = Math.min(fitWidth, fitHeight);
 
-    return clampZoom(boostedFit);
+    return clampZoom(fitZoom * 0.6);
   }
+
+  useEffect(() => {
+    measureWorkspaceHeight();
+
+    const handleResize = () => {
+      measureWorkspaceHeight();
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   useEffect(() => {
     if (loading) return;
@@ -355,14 +376,18 @@ export default function AdminEditor() {
     if (!imageSize.width || !imageSize.height) return;
 
     const applyFitZoom = () => {
-      const fitZoom = getFitZoom();
-      setZoom(fitZoom);
+      measureWorkspaceHeight();
 
       requestAnimationFrame(() => {
-        if (viewerRef.current) {
-          viewerRef.current.scrollLeft = 0;
-          viewerRef.current.scrollTop = 0;
-        }
+        const fitZoom = getFitZoom();
+        setZoom(fitZoom);
+
+        requestAnimationFrame(() => {
+          if (viewerRef.current) {
+            viewerRef.current.scrollLeft = 0;
+            viewerRef.current.scrollTop = 0;
+          }
+        });
       });
     };
 
@@ -373,7 +398,7 @@ export default function AdminEditor() {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", applyFitZoom);
     };
-  }, [loading, imageSize.width, imageSize.height, imageUrl]);
+  }, [loading, imageSize.width, imageSize.height, imageUrl, workspaceHeight]);
 
   function confirmLoseChanges() {
     if (!unsavedChanges) return true;
@@ -419,12 +444,7 @@ export default function AdminEditor() {
   }
 
   function onViewerWheel(e) {
-    if (orientationIsDrawing) return;
-
-    if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
-      e.preventDefault();
-      setZoom((prev) => clampZoom(prev + (e.deltaY < 0 ? 0.1 : -0.1)));
-    }
+    e.preventDefault();
   }
 
   function svgPointFromEvent(svg, e) {
@@ -1020,8 +1040,18 @@ export default function AdminEditor() {
   }
 
   return (
-    <div style={{ padding: 20, fontFamily: "Arial" }}>
-      <div style={{ marginBottom: 12 }}>
+    <div
+      ref={pageRef}
+      style={{
+        padding: "8px 10px 10px",
+        fontFamily: "Arial, sans-serif",
+        color: "#1f2937",
+        width: "100%",
+        boxSizing: "border-box",
+        overflow: "hidden",
+      }}
+    >
+      <div style={{ marginBottom: 8 }}>
         <button
           onClick={goBack}
           style={{
@@ -1030,21 +1060,24 @@ export default function AdminEditor() {
             color: "#2563eb",
             cursor: "pointer",
             padding: 0,
-            fontSize: "16px",
+            fontSize: 18,
+            fontWeight: 600,
           }}
         >
           ← Back
         </button>
       </div>
 
-      <h1 style={{ marginTop: 0 }}>{partId.replaceAll("_", " ")}</h1>
+      <h1 style={{ marginTop: 0, marginBottom: 12 }}>
+        {partId.replaceAll("_", " ")}
+      </h1>
 
       <div
         style={{
           display: "flex",
-          gap: 12,
+          gap: 10,
           alignItems: "center",
-          marginBottom: 16,
+          marginBottom: 12,
           flexWrap: "wrap",
         }}
       >
@@ -1118,7 +1151,7 @@ export default function AdminEditor() {
           style={{
             border: "1px solid #ccc",
             padding: 12,
-            marginBottom: 16,
+            marginBottom: 12,
             background: "#fafafa",
             display: "grid",
             gap: 10,
@@ -1194,9 +1227,9 @@ export default function AdminEditor() {
       <div
         style={{
           display: "flex",
-          gap: 12,
+          gap: 10,
           alignItems: "center",
-          marginBottom: 16,
+          marginBottom: 12,
           flexWrap: "wrap",
         }}
       >
@@ -1261,14 +1294,17 @@ export default function AdminEditor() {
       </div>
 
       <div
+        ref={workspaceRef}
         style={{
           display: "grid",
           gridTemplateColumns: "minmax(0, 1fr) 340px",
-          gap: 20,
+          gap: 12,
           alignItems: "stretch",
+          height: workspaceHeight,
+          minHeight: 0,
         }}
       >
-        <div style={{ minWidth: 0 }}>
+        <div style={{ minWidth: 0, minHeight: 0 }}>
           <div style={{ position: "relative", height: "100%" }}>
             <div
               style={{
@@ -1295,6 +1331,7 @@ export default function AdminEditor() {
 
             <div
               ref={viewerRef}
+              onWheelCapture={onViewerWheel}
               onWheel={onViewerWheel}
               onPointerDown={onViewerPointerDown}
               onPointerMove={onViewerPointerMove}
@@ -1304,23 +1341,26 @@ export default function AdminEditor() {
                 position: "relative",
                 border: "1px solid #ccc",
                 background: "#f8f8f8",
-                overflow: "auto",
-                maxHeight: "75vh",
-                minHeight: "75vh",
-                cursor:
-                  showOrientationPanel
-                    ? "default"
-                    : panInfo
-                      ? "grabbing"
-                      : zoom > 1
-                        ? "grab"
-                        : "default",
+                overflow: "hidden",
+                display: "flex",
+                justifyContent: "center",
+                alignItems: "center",
+                height: "100%",
+                minHeight: 0,
+                cursor: showOrientationPanel
+                  ? "default"
+                  : panInfo
+                    ? "grabbing"
+                    : zoom > 1
+                      ? "grab"
+                      : "default",
               }}
             >
               <div
                 style={{
                   position: "relative",
                   width: `${zoom * 100}%`,
+                  margin: "0 auto",
                 }}
               >
                 <img
@@ -1494,8 +1534,8 @@ export default function AdminEditor() {
             display: "flex",
             flexDirection: "column",
             gap: 12,
-            maxHeight: "75vh",
-            minHeight: "75vh",
+            height: "100%",
+            minHeight: 0,
             boxSizing: "border-box",
           }}
         >
@@ -1650,7 +1690,11 @@ export default function AdminEditor() {
                         >
                           <div>Zone {z.zone_id}</div>
                           <div
-                            style={{ fontSize: 12, color: "#666", marginTop: 2 }}
+                            style={{
+                              fontSize: 12,
+                              color: "#666",
+                              marginTop: 2,
+                            }}
                           >
                             {z.orientation
                               ? `Orientation: ${getOrientationLabel(z.orientation)}`

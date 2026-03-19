@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 
 const ORIENTATION_LABELS = {
@@ -7,6 +7,8 @@ const ORIENTATION_LABELS = {
   3: "180°",
   4: "270°",
 };
+
+const HEADER_HEIGHT = 96;
 
 export default function PartPage() {
   const { partId } = useParams();
@@ -90,6 +92,35 @@ export default function PartPage() {
     debugOrientationOverride === "live"
       ? tableOrientation
       : Number(debugOrientationOverride);
+
+  const totalZoneCount = useMemo(() => {
+    if (!part || !Array.isArray(part.sections)) return 0;
+
+    return part.sections.reduce((count, section) => {
+      return count + (Array.isArray(section.zones) ? section.zones.length : 0);
+    }, 0);
+  }, [part]);
+
+  const needsZoneSetup = useMemo(() => {
+    if (!part) return false;
+    if (part.configured === false) return true;
+    if (!Array.isArray(part.sections) || part.sections.length === 0) return true;
+    if (totalZoneCount === 0) return true;
+    return false;
+  }, [part, totalZoneCount]);
+
+  const firstEditableSection = useMemo(() => {
+    if (!part || !Array.isArray(part.sections) || part.sections.length === 0) {
+      return 1;
+    }
+
+    const sorted = [...part.sections]
+      .map((section) => section.index)
+      .filter((index) => typeof index === "number")
+      .sort((a, b) => a - b);
+
+    return sorted[0] || 1;
+  }, [part]);
 
   const validZoneIds = useMemo(() => {
     if (!part || !Array.isArray(part.sections)) return new Set();
@@ -193,52 +224,123 @@ export default function PartPage() {
     return <div style={{ padding: 16 }}>Loading...</div>;
   }
 
-  if (part && part.configured === false) {
+  if (needsZoneSetup) {
     return (
       <div
         style={{
-          padding: "4px 24px 24px",
+          padding: "6px 14px 12px",
           fontFamily: "Arial, sans-serif",
+          color: "#1f2937",
           width: "100%",
           boxSizing: "border-box",
-          color: "#1f2937",
+          height: `calc(100vh - ${HEADER_HEIGHT}px)`,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
         }}
       >
-        <div style={{ marginBottom: 10 }}>
+        <div style={{ marginBottom: 4, flex: "0 0 auto" }}>
           <Link to="/" style={backLinkStyle}>
-            ← Back to Parts
+            ← <span style={{ verticalAlign: "middle" }}>Back to Parts</span>
           </Link>
         </div>
 
-        <h1 style={{ marginTop: 0, marginBottom: 12, fontSize: 28 }}>
-          {part.display_name}
-        </h1>
-
         <div
           style={{
-            padding: 16,
-            border: "1px solid #d1d5db",
-            borderRadius: 14,
-            background: "#fff",
-            maxWidth: 520,
+            flex: 1,
+            minHeight: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
           }}
         >
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>
-            Zones not configured for this part
-          </div>
-          <div style={{ fontSize: 14, color: "#555" }}>
-            Missing zone files for sections:{" "}
-            {part.missing_zones_sections?.join(", ") || "unknown"}
-          </div>
-          <div style={{ marginTop: 16 }}>
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 560,
+              background: "#ffffff",
+              border: "1px solid #d1d5db",
+              borderRadius: 18,
+              boxShadow: "0 12px 30px rgba(15, 23, 42, 0.06)",
+              padding: "28px 24px",
+              textAlign: "center",
+            }}
+          >
+            <h1
+              style={{
+                margin: "0 0 10px",
+                fontSize: 32,
+                fontWeight: 800,
+                color: "#111827",
+                lineHeight: 1.1,
+              }}
+            >
+              {part.display_name}
+            </h1>
+
+            <div
+              style={{
+                fontSize: 20,
+                fontWeight: 700,
+                color: "#1f2937",
+                marginBottom: 10,
+              }}
+            >
+              Zones are not configured for this part
+            </div>
+
+            <div
+              style={{
+                fontSize: 14,
+                color: "#6b7280",
+                lineHeight: 1.6,
+                marginBottom: 18,
+              }}
+            >
+              This part cannot be opened until at least one section has valid
+              zone data.
+            </div>
+
+            <div
+              style={{
+                background: "#f8fafc",
+                border: "1px solid #e5e7eb",
+                borderRadius: 12,
+                padding: "12px 14px",
+                fontSize: 13,
+                color: "#475569",
+                lineHeight: 1.5,
+                marginBottom: 20,
+                textAlign: "left",
+              }}
+            >
+              {part.missing_zones_sections?.length > 0 ? (
+                <>
+                  Missing zone files for sections:{" "}
+                  {part.missing_zones_sections.join(", ")}
+                </>
+              ) : (
+                <>Zone files exist, but no zones have been created yet.</>
+              )}
+            </div>
+
             <button
               onClick={() => {
-                const missing = part.missing_zones_sections?.[0] || 1;
-                window.location.href = `/admin/editor/${part.part_id}/${missing}?return=grid`;
+                window.location.href = `/admin/editor/${part.part_id}/${firstEditableSection}?return=part`;
               }}
-              style={buttonStyle()}
+              style={{
+                padding: "12px 18px",
+                border: "1px solid #2563eb",
+                borderRadius: 12,
+                background: "#2563eb",
+                color: "#ffffff",
+                fontSize: 14,
+                fontWeight: 700,
+                cursor: "pointer",
+                minWidth: 190,
+              }}
             >
-              Enter Admin Mode
+              Open Zone Editor
             </button>
           </div>
         </div>
@@ -258,32 +360,37 @@ export default function PartPage() {
   return (
     <div
       style={{
-        padding: "4px 24px 24px",
+        padding: "6px 14px 12px",
         fontFamily: "Arial, sans-serif",
         color: "#1f2937",
         width: "100%",
         boxSizing: "border-box",
+        height: `calc(100vh - ${HEADER_HEIGHT}px)`,
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
       }}
     >
-      <div style={{ marginBottom: 8 }}>
+      <div style={{ marginBottom: 4, flex: "0 0 auto" }}>
         <Link to="/" style={backLinkStyle}>
-          ← Back to Parts
+          ← <span style={{ verticalAlign: "middle" }}>Back to Parts</span>
         </Link>
       </div>
 
-      <div style={{ marginBottom: 16 }}>
-        <h1 style={{ margin: 0, fontSize: 28, fontWeight: 800 }}>
-          {part.display_name}
-        </h1>
+      <div style={{ marginBottom: 8, flex: "0 0 auto" }}>
+        <h1 style={{ margin: 0, fontSize: 28 }}>{part.display_name}</h1>
       </div>
 
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: isNarrow ? "1fr" : "minmax(0, 1fr) 320px",
-          gap: 16,
-          alignItems: "start",
+          gridTemplateColumns: isNarrow ? "1fr" : "minmax(0, 1fr) 300px",
+          gap: 14,
+          alignItems: "stretch",
           width: "100%",
+          flex: 1,
+          minHeight: 0,
+          overflow: "hidden",
         }}
       >
         <div
@@ -291,17 +398,21 @@ export default function PartPage() {
             border: "1px solid #d1d5db",
             borderRadius: 14,
             background: "#fff",
-            padding: 12,
+            padding: 8,
             minWidth: 0,
             width: "100%",
             boxSizing: "border-box",
+            minHeight: 0,
+            overflow: "hidden",
           }}
         >
           <div
             style={{
               display: "grid",
-              gap: 16,
+              gap: 12,
               width: "100%",
+              height: "100%",
+              minHeight: 0,
             }}
           >
             {part.sections.map((section) => (
@@ -310,32 +421,38 @@ export default function PartPage() {
                 style={{
                   border: "1px solid #e5e7eb",
                   borderRadius: 12,
-                  overflow: "hidden",
                   background: "#f8fafc",
                   width: "100%",
+                  minHeight: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                  overflow: "hidden",
                 }}
               >
                 {part.sections.length > 1 && (
                   <div
                     style={{
-                      padding: "10px 12px",
+                      padding: "8px 12px",
                       borderBottom: "1px solid #e5e7eb",
                       fontWeight: 700,
                       background: "#f9fafb",
+                      flex: "0 0 auto",
                     }}
                   >
                     Section {section.index}
                   </div>
                 )}
 
-                <SectionViewer
-                  section={section}
-                  zoneState={zoneState}
-                  toggleZone={toggleZone}
-                  hoveredZone={hoveredZone}
-                  setHoveredZone={setHoveredZone}
-                  isZoneAvailable={isZoneAvailable}
-                />
+                <div style={{ flex: 1, minHeight: 0, padding: 6 }}>
+                  <SectionViewer
+                    section={section}
+                    zoneState={zoneState}
+                    toggleZone={toggleZone}
+                    hoveredZone={hoveredZone}
+                    setHoveredZone={setHoveredZone}
+                    isZoneAvailable={isZoneAvailable}
+                  />
+                </div>
               </div>
             ))}
           </div>
@@ -344,8 +461,12 @@ export default function PartPage() {
         <div
           style={{
             display: "grid",
-            gap: 16,
+            gap: 12,
             width: "100%",
+            alignContent: "start",
+            overflow: "auto",
+            minHeight: 0,
+            paddingRight: 2,
           }}
         >
           <Card title="Status">
@@ -470,74 +591,131 @@ function SectionViewer({
   setHoveredZone,
   isZoneAvailable,
 }) {
+  const containerRef = useRef(null);
+  const [fitSize, setFitSize] = useState({ width: 0, height: 0 });
+
+  const sourceWidth = section.image_size?.width || 1920;
+  const sourceHeight = section.image_size?.height || 1080;
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    function updateFit() {
+      const bounds = el.getBoundingClientRect();
+      const containerWidth = bounds.width;
+      const containerHeight = bounds.height;
+
+      if (!containerWidth || !containerHeight) return;
+
+      const scale = Math.min(
+        containerWidth / sourceWidth,
+        containerHeight / sourceHeight,
+      );
+
+      setFitSize({
+        width: Math.floor(sourceWidth * scale),
+        height: Math.floor(sourceHeight * scale),
+      });
+    }
+
+    updateFit();
+
+    const observer = new ResizeObserver(updateFit);
+    observer.observe(el);
+
+    return () => observer.disconnect();
+  }, [sourceWidth, sourceHeight]);
+
   return (
     <div
+      ref={containerRef}
       style={{
         position: "relative",
         width: "100%",
+        height: "100%",
+        minHeight: 0,
+        overflow: "hidden",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
       }}
     >
-      <img
-        src={section.image_url}
+      <div
         style={{
-          width: "100%",
-          display: "block",
-          height: "auto",
-        }}
-      />
-
-      <svg
-        viewBox={`0 0 ${section.image_size?.width || 1920} ${section.image_size?.height || 1080}`}
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          width: "100%",
-          height: "100%",
+          position: "relative",
+          width: fitSize.width,
+          height: fitSize.height,
+          flex: "0 0 auto",
         }}
       >
-        {section.zones.map((z) => {
-          const active = !!zoneState[z.zone_id];
-          const hovered = hoveredZone === z.zone_id;
-          const available = isZoneAvailable(z);
+        <img
+          src={section.image_url}
+          alt=""
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: fitSize.width,
+            height: fitSize.height,
+            display: "block",
+            objectFit: "fill",
+            userSelect: "none",
+            pointerEvents: "none",
+          }}
+        />
 
-          const fill = active
-            ? "rgba(22,163,74,0.42)"
-            : !available
-              ? "rgba(107,114,128,0.14)"
-              : hovered
-                ? "rgba(59,130,246,0.18)"
-                : "rgba(107,114,128,0.05)";
+        <svg
+          viewBox={`0 0 ${sourceWidth} ${sourceHeight}`}
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: fitSize.width,
+            height: fitSize.height,
+          }}
+        >
+          {section.zones.map((z) => {
+            const active = !!zoneState[z.zone_id];
+            const hovered = hoveredZone === z.zone_id;
+            const available = isZoneAvailable(z);
 
-          const stroke = active
-            ? "rgba(21,128,61,0.95)"
-            : !available
-              ? "rgba(107,114,128,0.45)"
-              : hovered
-                ? "rgba(59,130,246,0.7)"
-                : "rgba(107,114,128,0.25)";
+            const fill = active
+              ? "rgba(22,163,74,0.42)"
+              : !available
+                ? "rgba(107,114,128,0.14)"
+                : hovered
+                  ? "rgba(59,130,246,0.18)"
+                  : "rgba(107,114,128,0.05)";
 
-          return (
-            <polygon
-              key={z.zone_id}
-              points={z.points.map((p) => p.join(",")).join(" ")}
-              fill={fill}
-              stroke={stroke}
-              strokeWidth="2"
-              onClick={() => {
-                if (!available) return;
-                toggleZone(z.zone_id);
-              }}
-              onMouseEnter={() => setHoveredZone(z.zone_id)}
-              onMouseLeave={() => setHoveredZone(null)}
-              style={{
-                cursor: available ? "pointer" : "not-allowed",
-                transition: "fill 0.12s ease, stroke 0.12s ease",
-              }}
-            />
-          );
-        })}
-      </svg>
+            const stroke = active
+              ? "rgba(21,128,61,0.95)"
+              : !available
+                ? "rgba(107,114,128,0.45)"
+                : hovered
+                  ? "rgba(59,130,246,0.7)"
+                  : "rgba(107,114,128,0.25)";
+
+            return (
+              <polygon
+                key={z.zone_id}
+                points={z.points.map((p) => p.join(",")).join(" ")}
+                fill={fill}
+                stroke={stroke}
+                strokeWidth="2"
+                onClick={() => {
+                  if (!available) return;
+                  toggleZone(z.zone_id);
+                }}
+                onMouseEnter={() => setHoveredZone(z.zone_id)}
+                onMouseLeave={() => setHoveredZone(null)}
+                style={{
+                  cursor: available ? "pointer" : "not-allowed",
+                  transition: "fill 0.12s ease, stroke 0.12s ease",
+                }}
+              />
+            );
+          })}
+        </svg>
+      </div>
     </div>
   );
 }
@@ -636,6 +814,6 @@ function primaryButtonStyle(disabled = false) {
 const backLinkStyle = {
   color: "#2563eb",
   textDecoration: "none",
-  fontSize: 14,
-  fontWeight: 500,
+  fontSize: 18,
+  fontWeight: 700,
 };
