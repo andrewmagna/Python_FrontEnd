@@ -18,6 +18,7 @@ export default function PartPage() {
   const [hoveredZone, setHoveredZone] = useState(null);
   const [opcConnected, setOpcConnected] = useState(false);
   const [applyBusy, setApplyBusy] = useState(false);
+  const [autoApplyBusy, setAutoApplyBusy] = useState(false);
   const [tableOrientation, setTableOrientation] = useState(null);
   const [tableOrientationDegrees, setTableOrientationDegrees] = useState(null);
   const [debugOrientationOverride, setDebugOrientationOverride] =
@@ -164,13 +165,46 @@ export default function PartPage() {
     return zone.orientation === effectiveOrientation;
   }
 
-  function toggleZone(id) {
+  async function toggleZone(id) {
     if (!validZoneIds.has(id)) return;
 
-    setZoneState((prev) => ({
-      ...prev,
-      [id]: !prev[id],
-    }));
+    const wasSelected = !!zoneState[id];
+    const nextState = {
+      ...zoneState,
+      [id]: !wasSelected,
+    };
+
+    setZoneState(nextState);
+
+    if (wasSelected) {
+      try {
+        setAutoApplyBusy(true);
+
+        const res = await fetch("/api/apply", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            part_id: partId,
+            zones: nextState,
+          }),
+        });
+
+        if (!res.ok) {
+          let msg = "Auto-apply failed";
+          try {
+            const err = await res.json();
+            msg = err.detail || msg;
+          } catch {}
+          alert(msg);
+          setZoneState(zoneState);
+        }
+      } catch {
+        alert("Server error");
+        setZoneState(zoneState);
+      } finally {
+        setAutoApplyBusy(false);
+      }
+    }
   }
 
   function clearAll() {
@@ -212,7 +246,7 @@ export default function PartPage() {
         return;
       }
 
-      alert("Zones applied successfully");
+
     } catch {
       alert("Server error");
     } finally {
@@ -515,11 +549,11 @@ export default function PartPage() {
 
               <button
                 onClick={applyZones}
-                disabled={!opcConnected || applyBusy}
+                disabled={!opcConnected || applyBusy || autoApplyBusy}
                 title={!opcConnected ? "OPC disconnected" : ""}
-                style={primaryButtonStyle(!opcConnected || applyBusy)}
+                style={primaryButtonStyle(!opcConnected || applyBusy || autoApplyBusy)}
               >
-                {applyBusy ? "Applying..." : "Apply"}
+                {applyBusy ? "Applying..." : autoApplyBusy ? "Updating..." : "Apply"}
               </button>
             </div>
           </Card>

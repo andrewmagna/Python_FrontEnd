@@ -47,6 +47,8 @@ export default function AdminEditor() {
   const [zoom, setZoom] = useState(1);
   const [panInfo, setPanInfo] = useState(null);
   const [workspaceHeight, setWorkspaceHeight] = useState(520);
+  const [hoveredZoneId, setHoveredZoneId] = useState(null);
+  const [activeControlTab, setActiveControlTab] = useState("draw");
 
   const [showOrientationPanel, setShowOrientationPanel] = useState(false);
   const [orientationEditMode, setOrientationEditMode] = useState("assign");
@@ -61,6 +63,9 @@ export default function AdminEditor() {
   const workspaceRef = useRef(null);
   const svgRef = useRef(null);
   const viewerRef = useRef(null);
+  const zonesListRef = useRef(null);
+  const selectedZoneRowRef = useRef(null);
+  const hasUserAdjustedZoomRef = useRef(false);
 
   function normalizeZone(zone) {
     return {
@@ -85,37 +90,28 @@ export default function AdminEditor() {
   function getZoneEditorColors(orientation, selected, candidate) {
     if (candidate) {
       return {
-        fill: selected
-          ? "rgba(180, 95, 22, 0.30)"
-          : "rgba(180, 95, 22, 0.22)",
-        stroke: selected
-          ? "rgba(140, 73, 16, 1)"
-          : "rgba(156, 82, 18, 0.95)",
-        label: "rgba(110, 58, 14, 0.95)",
+        fill: selected ? "rgba(180, 95, 22, 0.30)" : "rgba(180, 95, 22, 0.22)",
+        stroke: selected ? "rgba(140, 73, 16, 1)" : "rgba(156, 82, 18, 0.95)",
+        label: "rgba(110, 58, 14, 0.98)",
+        labelBg: "rgba(255,255,255,0.44)",
       };
     }
 
     if (orientation == null) {
       return {
-        fill: selected
-          ? "rgba(0, 140, 255, 0.28)"
-          : "rgba(0, 140, 255, 0.18)",
-        stroke: selected
-          ? "rgba(0, 80, 200, 1)"
-          : "rgba(0, 100, 220, 0.95)",
-        label: "rgba(0, 70, 140, 0.95)",
+        fill: selected ? "rgba(0, 140, 255, 0.28)" : "rgba(0, 140, 255, 0.18)",
+        stroke: selected ? "rgba(0, 80, 200, 1)" : "rgba(0, 100, 220, 0.95)",
+        label: "rgba(0, 70, 140, 0.98)",
+        labelBg: "rgba(255,255,255,0.44)",
       };
     }
 
     if (orientation === 1) {
       return {
-        fill: selected
-          ? "rgba(47, 172, 40, 0.28)"
-          : "rgba(47, 172, 40, 0.18)",
-        stroke: selected
-          ? "rgba(44, 92, 85, 1)"
-          : "rgba(52, 106, 99, 0.95)",
-        label: "rgba(38, 77, 72, 0.95)",
+        fill: selected ? "rgba(47, 172, 40, 0.28)" : "rgba(47, 172, 40, 0.18)",
+        stroke: selected ? "rgba(44, 92, 85, 1)" : "rgba(52, 106, 99, 0.95)",
+        label: "rgba(38, 77, 72, 0.98)",
+        labelBg: "rgba(255,255,255,0.44)",
       };
     }
 
@@ -124,22 +120,18 @@ export default function AdminEditor() {
         fill: selected
           ? "rgba(198, 132, 27, 0.28)"
           : "rgba(198, 132, 27, 0.18)",
-        stroke: selected
-          ? "rgba(118, 94, 56, 1)"
-          : "rgba(132, 106, 64, 0.95)",
-        label: "rgba(95, 75, 44, 0.95)",
+        stroke: selected ? "rgba(118, 94, 56, 1)" : "rgba(132, 106, 64, 0.95)",
+        label: "rgba(95, 75, 44, 0.98)",
+        labelBg: "rgba(255,255,255,0.44)",
       };
     }
 
     if (orientation === 3) {
       return {
-        fill: selected
-          ? "rgba(211, 15, 64, 0.28)"
-          : "rgba(211, 15, 64, 0.18)",
-        stroke: selected
-          ? "rgba(98, 72, 83, 1)"
-          : "rgba(114, 84, 96, 0.95)",
-        label: "rgba(80, 59, 68, 0.95)",
+        fill: selected ? "rgba(211, 15, 64, 0.28)" : "rgba(211, 15, 64, 0.18)",
+        stroke: selected ? "rgba(98, 72, 83, 1)" : "rgba(114, 84, 96, 0.95)",
+        label: "rgba(80, 59, 68, 0.98)",
+        labelBg: "rgba(255,255,255,0.44)",
       };
     }
 
@@ -148,25 +140,22 @@ export default function AdminEditor() {
         fill: selected
           ? "rgba(158, 25, 195, 0.28)"
           : "rgba(158, 25, 195, 0.18)",
-        stroke: selected
-          ? "rgba(79, 78, 108, 1)"
-          : "rgba(92, 91, 124, 0.95)",
-        label: "rgba(67, 66, 92, 0.95)",
+        stroke: selected ? "rgba(79, 78, 108, 1)" : "rgba(92, 91, 124, 0.95)",
+        label: "rgba(67, 66, 92, 0.98)",
+        labelBg: "rgba(255,255,255,0.44)",
       };
     }
 
     return {
-      fill: selected
-        ? "rgba(0, 140, 255, 0.28)"
-        : "rgba(0, 140, 255, 0.18)",
-      stroke: selected
-        ? "rgba(0, 80, 200, 1)"
-        : "rgba(0, 100, 220, 0.95)",
-      label: "rgba(0, 70, 140, 0.95)",
+      fill: selected ? "rgba(0, 140, 255, 0.28)" : "rgba(0, 140, 255, 0.18)",
+      stroke: selected ? "rgba(0, 80, 200, 1)" : "rgba(0, 100, 220, 0.95)",
+      label: "rgba(0, 70, 140, 0.98)",
+      labelBg: "rgba(255,255,255,0.44)",
     };
   }
 
   function resetOrientationAssignmentState() {
+    setActiveControlTab("draw");
     setShowOrientationPanel(false);
     setOrientationEditMode("assign");
     setOrientationValue(1);
@@ -187,6 +176,10 @@ export default function AdminEditor() {
     const savedZoom = zoom;
     const savedScrollLeft = viewerRef.current?.scrollLeft || 0;
     const savedScrollTop = viewerRef.current?.scrollTop || 0;
+
+    if (!preserveView) {
+      hasUserAdjustedZoomRef.current = false;
+    }
 
     setLoading(true);
 
@@ -235,8 +228,13 @@ export default function AdminEditor() {
     setEditMode("move");
     setUnsavedChanges(false);
     setPanInfo(null);
+    setHoveredZoneId(null);
     resetOrientationAssignmentState();
     setLoading(false);
+
+    if (zonesListRef.current) {
+      zonesListRef.current.scrollTop = 0;
+    }
 
     if (preserveView) {
       requestAnimationFrame(() => {
@@ -298,6 +296,9 @@ export default function AdminEditor() {
   const draftHandleRadius = Math.max(6, 6 * scaleFactor);
   const draftStrokeWidth = Math.max(3, 3 * scaleFactor);
   const orientationLassoStrokeWidth = Math.max(2, 2 * scaleFactor);
+  const labelPaddingX = Math.max(10, 10 * scaleFactor);
+  const labelPaddingY = Math.max(5, 5 * scaleFactor);
+  const labelRadius = Math.max(8, 8 * scaleFactor);
 
   const orientationCandidateSet = useMemo(
     () => new Set(orientationCandidateZoneIds),
@@ -327,15 +328,31 @@ export default function AdminEditor() {
     forbiddenZoneIds,
   ]);
 
-  function clampZoom(value) {
+  useEffect(() => {
+    if (!selectedZoneId || !selectedZoneRowRef.current) return;
+
+    selectedZoneRowRef.current.scrollIntoView({
+      block: "nearest",
+      behavior: "smooth",
+    });
+  }, [selectedZoneId]);
+
+  function clampInitialZoom(value) {
     return Math.max(0.2, Math.min(3, Number(value.toFixed(2))));
+  }
+
+  function clampUserZoom(value) {
+    return Math.max(0.2, Math.min(8, Number(value.toFixed(2))));
   }
 
   function measureWorkspaceHeight() {
     if (!workspaceRef.current) return;
 
     const rect = workspaceRef.current.getBoundingClientRect();
-    const nextHeight = Math.max(320, Math.floor(window.innerHeight - rect.top - 10));
+    const nextHeight = Math.max(
+      320,
+      Math.floor(window.innerHeight - rect.top - 10),
+    );
     setWorkspaceHeight(nextHeight);
   }
 
@@ -356,7 +373,35 @@ export default function AdminEditor() {
     const fitHeight = viewerHeight / imageSize.height;
     const fitZoom = Math.min(fitWidth, fitHeight);
 
-    return clampZoom(fitZoom * 0.6);
+    const fittedRenderWidth = imageSize.width * fitZoom;
+    const fittedRenderHeight = imageSize.height * fitZoom;
+
+    const minPreferredWidth = 900;
+    const maxPreferredWidth = 1150;
+    const minPreferredHeight = 500;
+    const maxPreferredHeight = 720;
+
+    let zoom = fitZoom;
+
+    if (fittedRenderWidth < minPreferredWidth) {
+      zoom = Math.max(zoom, minPreferredWidth / imageSize.width);
+    }
+
+    if (fittedRenderWidth > maxPreferredWidth) {
+      zoom = Math.min(zoom, maxPreferredWidth / imageSize.width);
+    }
+
+    if (fittedRenderHeight < minPreferredHeight) {
+      zoom = Math.max(zoom, minPreferredHeight / imageSize.height);
+    }
+
+    if (fittedRenderHeight > maxPreferredHeight) {
+      zoom = Math.min(zoom, maxPreferredHeight / imageSize.height);
+    }
+
+    zoom = Math.min(zoom, fitZoom);
+
+    return clampInitialZoom(zoom);
   }
 
   useEffect(() => {
@@ -370,35 +415,44 @@ export default function AdminEditor() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  useEffect(() => {
-    if (loading) return;
-    if (!viewerRef.current) return;
-    if (!imageSize.width || !imageSize.height) return;
+    useEffect(() => {
+      if (loading) return;
+      if (!viewerRef.current) return;
+      if (!imageSize.width || !imageSize.height) return;
 
-    const applyFitZoom = () => {
-      measureWorkspaceHeight();
-
-      requestAnimationFrame(() => {
-        const fitZoom = getFitZoom();
-        setZoom(fitZoom);
+      const applyFitZoom = ({ force = false } = {}) => {
+        measureWorkspaceHeight();
 
         requestAnimationFrame(() => {
-          if (viewerRef.current) {
-            viewerRef.current.scrollLeft = 0;
-            viewerRef.current.scrollTop = 0;
+          if (!force && hasUserAdjustedZoomRef.current) {
+            return;
           }
+
+          const fitZoom = getFitZoom();
+          setZoom(fitZoom);
+    
+          requestAnimationFrame(() => {
+            if (viewerRef.current) {
+              viewerRef.current.scrollLeft = 0;
+              viewerRef.current.scrollTop = 0;
+            }
+          });
         });
-      });
-    };
+      };
 
-    const raf = requestAnimationFrame(applyFitZoom);
-    window.addEventListener("resize", applyFitZoom);
+      const raf = requestAnimationFrame(() => applyFitZoom({ force: true }));
 
-    return () => {
-      cancelAnimationFrame(raf);
-      window.removeEventListener("resize", applyFitZoom);
-    };
-  }, [loading, imageSize.width, imageSize.height, imageUrl, workspaceHeight]);
+      const handleResize = () => {
+        applyFitZoom({ force: false });
+      };
+
+      window.addEventListener("resize", handleResize);
+
+      return () => {
+        cancelAnimationFrame(raf);
+        window.removeEventListener("resize", handleResize);
+      };
+    }, [loading, imageSize.width, imageSize.height, imageUrl]);
 
   function confirmLoseChanges() {
     if (!unsavedChanges) return true;
@@ -423,17 +477,21 @@ export default function AdminEditor() {
   }
 
   function zoomIn() {
-    setZoom((prev) => clampZoom(prev + 0.1));
+    hasUserAdjustedZoomRef.current = true;
+    setZoom((prev) => clampUserZoom(prev + 0.1));
   }
 
   function zoomOut() {
-    setZoom((prev) => clampZoom(prev - 0.1));
+    hasUserAdjustedZoomRef.current = true;
+    setZoom((prev) => clampUserZoom(prev - 0.1));
   }
 
   function resetZoom() {
+    hasUserAdjustedZoomRef.current = false;
     const fitZoom = getFitZoom();
     setZoom(fitZoom);
     setPanInfo(null);
+    
 
     requestAnimationFrame(() => {
       if (viewerRef.current) {
@@ -618,6 +676,12 @@ export default function AdminEditor() {
     });
   }
 
+  function selectZone(zoneId) {
+    setSelectedZoneId(zoneId);
+    setSelectedVertexIndex(null);
+    setRenumberInput(String(zoneId));
+  }
+
   function onZoneClick(e, zoneId) {
     e.stopPropagation();
 
@@ -639,9 +703,7 @@ export default function AdminEditor() {
       return;
     }
 
-    setSelectedZoneId(zoneId);
-    setSelectedVertexIndex(null);
-    setRenumberInput(String(zoneId));
+    selectZone(zoneId);
   }
 
   function onSvgPointerMove(e) {
@@ -1081,195 +1143,17 @@ export default function AdminEditor() {
           flexWrap: "wrap",
         }}
       >
-        <input
-          type="number"
-          min="1"
-          max="40"
-          placeholder="New zone ID"
-          value={zoneIdInput}
-          onChange={(e) => {
-            setZoneIdInput(e.target.value);
-            setZoneIdTouched(true);
-          }}
-          style={{ padding: 8, width: 120 }}
-          disabled={selectedZoneId !== null || showOrientationPanel}
-        />
-        <button
-          onClick={saveDraftPolygon}
-          disabled={selectedZoneId !== null || showOrientationPanel}
-        >
-          Close Draft as Polygon
-        </button>
-        <button
-          onClick={undoDraftPoint}
-          disabled={
-            draftPoints.length === 0 ||
-            selectedZoneId !== null ||
-            showOrientationPanel
-          }
-        >
-          Undo Last Point
-        </button>
-        <button
-          onClick={revertChanges}
-          disabled={!unsavedChanges || busy || importBusy}
-        >
-          Revert Changes
-        </button>
-        <button onClick={importOverlay} disabled={importBusy || busy}>
-          {importBusy ? "Importing..." : "Import From Overlay"}
-        </button>
-        <button
-          onClick={() => {
-            setShowOrientationPanel((prev) => {
-              const next = !prev;
-              if (!next) {
-                clearOrientationSelectionOnly();
-              }
-              return next;
-            });
-          }}
-          disabled={busy || importBusy || zones.length === 0}
-        >
-          {showOrientationPanel
-            ? "Close Orientation Tool"
-            : "Assign Orientations"}
-        </button>
-        <button onClick={saveSection} disabled={busy || importBusy}>
-          {busy ? "Saving..." : "Save Section"}
-        </button>
-
-        {unsavedChanges && (
-          <div style={{ color: "#b45309", fontWeight: 600 }}>
-            Unsaved changes
-          </div>
-        )}
-      </div>
-
-      {showOrientationPanel && (
-        <div
-          style={{
-            border: "1px solid #ccc",
-            padding: 12,
-            marginBottom: 12,
-            background: "#fafafa",
-            display: "grid",
-            gap: 10,
-          }}
-        >
-          <div style={{ fontWeight: 700 }}>Orientation Assignment</div>
-
-          <div
-            style={{
-              display: "flex",
-              gap: 12,
-              alignItems: "center",
-              flexWrap: "wrap",
-            }}
-          >
-            <div>
-              <label style={{ marginRight: 8, fontWeight: 600 }}>
-                Orientation:
-              </label>
-              <select
-                value={orientationValue}
-                onChange={(e) => setOrientationValue(Number(e.target.value))}
-                style={{ padding: 6 }}
-              >
-                {ORIENTATION_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label style={{ marginRight: 8, fontWeight: 600 }}>Action:</label>
-              <select
-                value={orientationEditMode}
-                onChange={(e) => setOrientationEditMode(e.target.value)}
-                style={{ padding: 6 }}
-              >
-                <option value="assign">Assign</option>
-                <option value="remove">Remove</option>
-              </select>
-            </div>
-
-            <button onClick={clearOrientationSelectionOnly}>
-              Clear Selection
-            </button>
-
-            <button onClick={applyOrientationAssignment}>
-              Confirm{" "}
-              {orientationEditMode === "assign" ? "Assignment" : "Removal"}
-            </button>
-          </div>
-
-          <div style={{ fontSize: 14, color: "#555" }}>
-            Draw a freehand lasso around target zones. After drawing, click
-            individual zones to add or remove them from the candidate set, then
-            confirm.
-          </div>
-
-          <div style={{ fontSize: 14, color: "#555" }}>
-            Candidate zones:{" "}
-            {orientationCandidateZoneIds.length > 0
-              ? orientationCandidateZoneIds
-                  .slice()
-                  .sort((a, b) => a - b)
-                  .join(", ")
-              : "None"}
-          </div>
-        </div>
-      )}
-
-      <div
-        style={{
-          display: "flex",
-          gap: 10,
-          alignItems: "center",
-          marginBottom: 12,
-          flexWrap: "wrap",
-        }}
-      >
-        <div style={{ fontWeight: 600 }}>Edit mode:</div>
-        <button
-          disabled={!selectedZoneId || showOrientationPanel}
-          onClick={() => setEditMode("move")}
-          style={{
-            opacity: selectedZoneId && !showOrientationPanel ? 1 : 0.4,
-            border:
-              editMode === "move" ? "2px solid #2563eb" : "1px solid #ccc",
-            padding: "6px 10px",
-            fontWeight: editMode === "move" ? 700 : 400,
-          }}
-        >
-          Move
-        </button>
-        <button
-          disabled={!selectedZoneId || showOrientationPanel}
-          onClick={() => setEditMode("insert")}
-          style={{
-            opacity: selectedZoneId && !showOrientationPanel ? 1 : 0.4,
-            border:
-              editMode === "insert" ? "2px solid #2563eb" : "1px solid #ccc",
-            padding: "6px 10px",
-            fontWeight: editMode === "insert" ? 700 : 400,
-          }}
-        >
-          Insert Vertex
-        </button>
-        <button
-          onClick={deleteSelectedVertex}
-          disabled={selectedVertexIndex === null || showOrientationPanel}
-        >
-          Delete Selected Vertex
-        </button>
-
         {showSectionSelector && (
           <>
-            <div style={{ fontWeight: 600, marginLeft: 16 }}>Sections:</div>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                color: "#6b7280",
+              }}
+            >
+              SECTIONS
+            </div>
             {availableSections
               .slice()
               .sort((a, b) => a - b)
@@ -1284,6 +1168,8 @@ export default function AdminEditor() {
                         ? "2px solid #2563eb"
                         : "1px solid #ccc",
                     padding: "6px 10px",
+                    borderRadius: 8,
+                    background: "#fff",
                   }}
                 >
                   Section {sec}
@@ -1291,19 +1177,384 @@ export default function AdminEditor() {
               ))}
           </>
         )}
+
+        <div
+          style={{
+            marginLeft: showSectionSelector ? 8 : 0,
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+          }}
+        >
+          <button
+            onClick={saveSection}
+            disabled={busy || importBusy}
+            style={{
+              padding: "8px 14px",
+              borderRadius: 10,
+              background: busy || importBusy ? "#dbeafe" : "#2563eb",
+              color: busy || importBusy ? "#6b7280" : "#fff",
+              border: "1px solid #2563eb",
+              fontWeight: 700,
+              boxShadow:
+                busy || importBusy ? "none" : "0 4px 12px rgba(37,99,235,0.18)",
+            }}
+          >
+            {busy ? "Saving..." : "Save Section"}
+          </button>
+
+          <button
+            onClick={revertChanges}
+            disabled={!unsavedChanges || busy || importBusy}
+            style={{
+              padding: "8px 12px",
+              borderRadius: 10,
+              border: "1px solid #d1d5db",
+              background: "#fff",
+              fontWeight: 600,
+            }}
+          >
+            Undo
+          </button>
+        </div>
+
+        {unsavedChanges && (
+          <div style={{ color: "#b45309", fontWeight: 700 }}>
+            Unsaved changes
+          </div>
+        )}
       </div>
 
       <div
         ref={workspaceRef}
         style={{
           display: "grid",
-          gridTemplateColumns: "minmax(0, 1fr) 340px",
+          gridTemplateColumns: "340px minmax(0, 1fr) 340px",
           gap: 12,
           alignItems: "stretch",
           height: workspaceHeight,
           minHeight: 0,
         }}
       >
+        <div
+          style={{
+            border: "1px solid #ccc",
+            padding: 12,
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+            height: "100%",
+            minHeight: 0,
+            boxSizing: "border-box",
+            borderRadius: 10,
+            background: "#fff",
+          }}
+        >
+          <div
+            style={{
+              border: "1px solid #ddd",
+              borderRadius: 10,
+              padding: 12,
+              flex: "1 1 2",
+              overflowY: "auto",
+              minHeight: 0,
+              background: "#fff",
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+          >
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 1fr",
+                gap: 6,
+                background: "#f3f4f6",
+                padding: 4,
+                borderRadius: 10,
+              }}
+            >
+              <button
+                onClick={() => setActiveControlTab("draw")}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border: "none",
+                  background:
+                    activeControlTab === "draw" ? "#fff" : "transparent",
+                  fontWeight: activeControlTab === "draw" ? 700 : 500,
+                  boxShadow:
+                    activeControlTab === "draw"
+                      ? "0 1px 3px rgba(0,0,0,0.1)"
+                      : "none",
+                }}
+              >
+                Draw
+              </button>
+
+              <button
+                onClick={() => setActiveControlTab("edit")}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border: "none",
+                  background:
+                    activeControlTab === "edit" ? "#fff" : "transparent",
+                  fontWeight: activeControlTab === "edit" ? 700 : 500,
+                  boxShadow:
+                    activeControlTab === "edit"
+                      ? "0 1px 3px rgba(0,0,0,0.1)"
+                      : "none",
+                }}
+              >
+                Edit
+              </button>
+
+              <button
+                onClick={() => setActiveControlTab("orientation")}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border: "none",
+                  background:
+                    activeControlTab === "orientation" ? "#fff" : "transparent",
+                  fontWeight: activeControlTab === "orientation" ? 700 : 500,
+                  boxShadow:
+                    activeControlTab === "orientation"
+                      ? "0 1px 3px rgba(0,0,0,0.1)"
+                      : "none",
+                }}
+              >
+                Orientation
+              </button>
+            </div>
+
+            {activeControlTab === "draw" && (
+              <div style={{ display: "grid", gap: 10 }}>
+                <div>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 700,
+                      color: "#6b7280",
+                      marginBottom: 6,
+                    }}
+                  >
+                    NEW ZONE ID
+                  </div>
+                  <input
+                    type="number"
+                    min="1"
+                    max="40"
+                    placeholder="New zone ID"
+                    value={zoneIdInput}
+                    onChange={(e) => {
+                      setZoneIdInput(e.target.value);
+                      setZoneIdTouched(true);
+                    }}
+                    style={{
+                      padding: 8,
+                      width: "100%",
+                      boxSizing: "border-box",
+                    }}
+                    disabled={selectedZoneId !== null || showOrientationPanel}
+                  />
+                </div>
+
+                <button
+                  onClick={saveDraftPolygon}
+                  disabled={selectedZoneId !== null || showOrientationPanel}
+                >
+                  Close Draft
+                </button>
+
+                <button
+                  onClick={undoDraftPoint}
+                  disabled={
+                    draftPoints.length === 0 ||
+                    selectedZoneId !== null ||
+                    showOrientationPanel
+                  }
+                >
+                  Undo Last Point
+                </button>
+
+                <button onClick={importOverlay} disabled={importBusy || busy}>
+                  {importBusy ? "Importing..." : "Import From Overlay"}
+                </button>
+              </div>
+            )}
+
+            {activeControlTab === "edit" && (
+              <div style={{ display: "grid", gap: 10 }}>
+                <button
+                  disabled={!selectedZoneId || showOrientationPanel}
+                  onClick={() => setEditMode("move")}
+                  style={{
+                    opacity: selectedZoneId && !showOrientationPanel ? 1 : 0.4,
+                    border:
+                      editMode === "move"
+                        ? "2px solid #2563eb"
+                        : "1px solid #ccc",
+                    padding: "8px 10px",
+                    fontWeight: editMode === "move" ? 700 : 400,
+                    borderRadius: 8,
+                    background: "#fff",
+                  }}
+                >
+                  Move
+                </button>
+
+                <button
+                  disabled={!selectedZoneId || showOrientationPanel}
+                  onClick={() => setEditMode("insert")}
+                  style={{
+                    opacity: selectedZoneId && !showOrientationPanel ? 1 : 0.4,
+                    border:
+                      editMode === "insert"
+                        ? "2px solid #2563eb"
+                        : "1px solid #ccc",
+                    padding: "8px 10px",
+                    fontWeight: editMode === "insert" ? 700 : 400,
+                    borderRadius: 8,
+                    background: "#fff",
+                  }}
+                >
+                  Insert Vertex
+                </button>
+
+                <button
+                  onClick={deleteSelectedVertex}
+                  disabled={
+                    selectedVertexIndex === null || showOrientationPanel
+                  }
+                >
+                  Delete Selected Vertex
+                </button>
+
+                <div
+                  style={{ fontSize: 13, color: "#6b7280", lineHeight: 1.4 }}
+                >
+                  {showOrientationPanel
+                    ? "Orientation tool is active."
+                    : editMode === "move"
+                      ? "Drag a vertex handle, or drag inside the selected zone to move the full zone."
+                      : "Click near an edge of the selected zone to insert a new vertex."}
+                </div>
+              </div>
+            )}
+
+            {activeControlTab === "orientation" && (
+              <div style={{ display: "grid", gap: 10 }}>
+                <button
+                  onClick={() => {
+                    setShowOrientationPanel((prev) => {
+                      const next = !prev;
+                      if (!next) {
+                        clearOrientationSelectionOnly();
+                      }
+                      return next;
+                    });
+                  }}
+                  disabled={busy || importBusy || zones.length === 0}
+                >
+                  {showOrientationPanel
+                    ? "Close Orientation Tool"
+                    : "Assign Orientations"}
+                </button>
+
+                <div>
+                  <label
+                    style={{
+                      display: "block",
+                      marginBottom: 6,
+                      fontSize: 12,
+                      fontWeight: 700,
+                      color: "#6b7280",
+                    }}
+                  >
+                    Orientation
+                  </label>
+                  <select
+                    value={orientationValue}
+                    onChange={(e) =>
+                      setOrientationValue(Number(e.target.value))
+                    }
+                    style={{ padding: 8, width: "100%" }}
+                    disabled={!showOrientationPanel}
+                  >
+                    {ORIENTATION_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    style={{
+                      display: "block",
+                      marginBottom: 6,
+                      fontSize: 12,
+                      fontWeight: 700,
+                      color: "#6b7280",
+                    }}
+                  >
+                    Action
+                  </label>
+                  <select
+                    value={orientationEditMode}
+                    onChange={(e) => setOrientationEditMode(e.target.value)}
+                    style={{ padding: 8, width: "100%" }}
+                    disabled={!showOrientationPanel}
+                  >
+                    <option value="assign">Assign</option>
+                    <option value="remove">Remove</option>
+                  </select>
+                </div>
+
+                <button
+                  onClick={clearOrientationSelectionOnly}
+                  disabled={!showOrientationPanel}
+                >
+                  Clear Selection
+                </button>
+
+                <button
+                  onClick={applyOrientationAssignment}
+                  disabled={!showOrientationPanel}
+                >
+                  Confirm{" "}
+                  {orientationEditMode === "assign" ? "Assignment" : "Removal"}
+                </button>
+
+                <div
+                  style={{ fontSize: 13, color: "#6b7280", lineHeight: 1.4 }}
+                >
+                  Draw around zones, or click zones on the canvas.
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div
+            style={{
+              border: "1px solid #ddd",
+              borderRadius: 10,
+              padding: 12,
+              flex: "1 1 auto",
+              minHeight: 0,
+              background: "#fff",
+            }}
+          >
+            <h3 style={{ marginTop: 0, marginBottom: 12 }}>Upcoming Feature</h3>
+            <div style={{ fontSize: 14, color: "#666" }}>
+              Left bottom panel placeholder
+            </div>
+          </div>
+        </div>
+
         <div style={{ minWidth: 0, minHeight: 0 }}>
           <div style={{ position: "relative", height: "100%" }}>
             <div
@@ -1341,7 +1592,7 @@ export default function AdminEditor() {
                 position: "relative",
                 border: "1px solid #ccc",
                 background: "#f8f8f8",
-                overflow: "hidden",
+                overflow: "auto",
                 display: "flex",
                 justifyContent: "center",
                 alignItems: "center",
@@ -1361,6 +1612,8 @@ export default function AdminEditor() {
                   position: "relative",
                   width: `${zoom * 100}%`,
                   margin: "0 auto",
+                  flex: "0 0 auto",
+                  flexShrink: 0,
                 }}
               >
                 <img
@@ -1409,6 +1662,7 @@ export default function AdminEditor() {
                   {zones.map((z) => {
                     const selected = z.zone_id === selectedZoneId;
                     const candidate = orientationCandidateSet.has(z.zone_id);
+                    const hovered = hoveredZoneId === z.zone_id;
                     const c = centroid(z.points);
                     const colors = getZoneEditorColors(
                       z.orientation,
@@ -1425,10 +1679,30 @@ export default function AdminEditor() {
                         selectedZoneStrokeWidth,
                         zoneStrokeWidth + 1,
                       );
+                    } else if (hovered) {
+                      strokeWidth = Math.max(
+                        selectedZoneStrokeWidth,
+                        zoneStrokeWidth + 1,
+                      );
                     }
 
+                    const labelText = String(z.zone_id);
+                    const estimatedLabelWidth =
+                      labelText.length * zoneLabelFontSize * 0.62 +
+                      labelPaddingX * 2;
+                    const labelHeight =
+                      zoneLabelFontSize * 0.95 + labelPaddingY * 2;
+
                     return (
-                      <g key={z.zone_id}>
+                      <g
+                        key={z.zone_id}
+                        onMouseEnter={() => setHoveredZoneId(z.zone_id)}
+                        onMouseLeave={() =>
+                          setHoveredZoneId((prev) =>
+                            prev === z.zone_id ? null : prev,
+                          )
+                        }
+                      >
                         <polygon
                           points={z.points.map((p) => p.join(",")).join(" ")}
                           fill={colors.fill}
@@ -1445,16 +1719,40 @@ export default function AdminEditor() {
                           }}
                         />
 
+                        <rect
+                          x={c.x - estimatedLabelWidth / 2}
+                          y={c.y - labelHeight / 2}
+                          width={estimatedLabelWidth}
+                          height={labelHeight}
+                          rx={labelRadius}
+                          ry={labelRadius}
+                          fill={colors.labelBg}
+                          stroke={
+                            selected || hovered
+                              ? colors.stroke
+                              : "rgba(255,255,255,0.0)"
+                          }
+                          strokeWidth={
+                            selected || hovered ? Math.max(1, scaleFactor) : 0
+                          }
+                          style={{ pointerEvents: "none" }}
+                        />
+
                         <text
                           x={c.x}
                           y={c.y}
                           textAnchor="middle"
                           dominantBaseline="middle"
                           fontSize={zoneLabelFontSize}
+                          fontWeight={800}
                           fill={colors.label}
+                          stroke="rgba(255,255,255,0.92)"
+                          strokeWidth={Math.max(2, 2 * scaleFactor)}
+                          paintOrder="stroke"
+                          letterSpacing="0.01em"
                           style={{ pointerEvents: "none", userSelect: "none" }}
                         >
-                          {z.zone_id}
+                          {labelText}
                         </text>
 
                         {selected &&
@@ -1544,6 +1842,8 @@ export default function AdminEditor() {
               border: "1px solid #ddd",
               padding: 12,
               flex: "0 0 auto",
+              borderRadius: 10,
+              background: selectedZone ? "#f8fbff" : "#fff",
             }}
           >
             <h3 style={{ marginTop: 0 }}>Selected Zone</h3>
@@ -1552,7 +1852,7 @@ export default function AdminEditor() {
 
             {selectedZone && (
               <>
-                <div style={{ marginBottom: 10, fontWeight: 600 }}>
+                <div style={{ marginBottom: 10, fontWeight: 700 }}>
                   Zone {selectedZone.zone_id}
                 </div>
 
@@ -1636,7 +1936,9 @@ export default function AdminEditor() {
               display: "flex",
               flexDirection: "column",
               minHeight: 0,
-              flex: "1 1 auto",
+              flex: "1 1 0",
+              borderRadius: 10,
+              background: "#fff",
             }}
           >
             <h3 style={{ marginTop: 0, marginBottom: 12 }}>Zones</h3>
@@ -1645,6 +1947,7 @@ export default function AdminEditor() {
               <div>No zones yet</div>
             ) : (
               <div
+                ref={zonesListRef}
                 style={{
                   display: "grid",
                   gap: 8,
@@ -1659,10 +1962,18 @@ export default function AdminEditor() {
                   .map((z) => {
                     const selected = z.zone_id === selectedZoneId;
                     const candidate = orientationCandidateSet.has(z.zone_id);
+                    const hovered = hoveredZoneId === z.zone_id;
 
                     return (
                       <div
                         key={z.zone_id}
+                        ref={selected ? selectedZoneRowRef : null}
+                        onMouseEnter={() => setHoveredZoneId(z.zone_id)}
+                        onMouseLeave={() =>
+                          setHoveredZoneId((prev) =>
+                            prev === z.zone_id ? null : prev,
+                          )
+                        }
                         style={{
                           display: "flex",
                           justifyContent: "space-between",
@@ -1671,21 +1982,33 @@ export default function AdminEditor() {
                             ? "2px solid #d97706"
                             : selected
                               ? "2px solid #2563eb"
-                              : "1px solid #ddd",
+                              : hovered
+                                ? "1px solid #93c5fd"
+                                : "1px solid #ddd",
+                          background: selected
+                            ? "#eff6ff"
+                            : hovered
+                              ? "#f8fbff"
+                              : "#fff",
+                          borderRadius: 10,
                           padding: 8,
+                          transition:
+                            "border-color 0.12s ease, background 0.12s ease",
+                          boxShadow: selected
+                            ? "inset 4px 0 0 #2563eb"
+                            : "none",
                         }}
                       >
                         <button
-                          onClick={() =>
-                            onZoneClick({ stopPropagation() {} }, z.zone_id)
-                          }
+                          onClick={() => selectZone(z.zone_id)}
                           style={{
                             background: "none",
                             border: "none",
                             padding: 0,
                             cursor: "pointer",
-                            fontWeight: selected || candidate ? 700 : 400,
+                            fontWeight: selected || candidate ? 700 : 500,
                             textAlign: "left",
+                            flex: 1,
                           }}
                         >
                           <div>Zone {z.zone_id}</div>
@@ -1755,8 +2078,7 @@ function isPointInPolygon(point, polygon) {
     const yj = polygon[j][1];
 
     const intersects =
-      yi > y !== yj > y &&
-      x < ((xj - xi) * (y - yi)) / ((yj - yi) || 1e-9) + xi;
+      yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-9) + xi;
 
     if (intersects) inside = !inside;
   }
