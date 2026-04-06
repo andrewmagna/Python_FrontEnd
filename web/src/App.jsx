@@ -4,6 +4,7 @@ import PartPage from "./pages/PartPage.jsx";
 import AdminLogin from "./pages/AdminLogin.jsx";
 import AdminEditor from "./pages/AdminEditor.jsx";
 import AppHeader from "./components/AppHeader.jsx";
+import AdminRecipes from "./pages/AdminRecipes.jsx";
 
 export default function App() {
   const location = useLocation();
@@ -34,6 +35,7 @@ export default function App() {
               path="/admin/editor/:partId/:sectionIndex"
               element={<AdminEditor />}
             />
+            <Route path="/admin/recipes/:partId" element={<AdminRecipes />} />
             <Route path="/admin/login" element={<AdminLogin />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

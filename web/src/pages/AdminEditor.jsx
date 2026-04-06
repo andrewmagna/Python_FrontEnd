@@ -1216,6 +1216,23 @@ export default function AdminEditor() {
           >
             Undo
           </button>
+
+          <button
+            onClick={() => {
+              if (!confirmLoseChanges()) return;
+              navigate(`/admin/recipes/${partId}?return=${returnTarget}`);
+            }}
+            disabled={busy || importBusy}
+            style={{
+              padding: "8px 12px",
+              borderRadius: 10,
+              border: "1px solid #d1d5db",
+              background: "#fff",
+              fontWeight: 600,
+            }}
+          >
+            Edit Recipes
+          </button>
         </div>
 
         {unsavedChanges && (

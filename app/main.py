@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import cv2
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -19,6 +19,7 @@ from app.opc_service import (
     is_connected,
     get_table_orientation,
     get_table_orientation_degrees,
+    get_paths,
 )
 from app.overlay_import import import_polygons_from_overlay
 from app.parts_service import get_part, scan_parts
@@ -35,6 +36,9 @@ app = FastAPI(title="ZoneSelect", lifespan=lifespan)
 
 cfg = load_config()
 parts_root = Path(cfg.parts_root)
+
+RECIPES_ROOT = Path("data/recipes")
+RECIPES_ROOT.mkdir(parents=True, exist_ok=True)
 
 if parts_root.exists():
     app.mount("/parts", StaticFiles(directory=parts_root), name="parts")
@@ -53,6 +57,10 @@ class ApplyRequest(BaseModel):
     zones: dict
 
 
+class WritePathsRequest(BaseModel):
+    paths: list
+
+
 class AdminLoginRequest(BaseModel):
     password: str
 
@@ -69,6 +77,23 @@ class EditorSaveRequest(BaseModel):
     image: str
     image_size: dict
     zones: list
+
+
+class SaveRecipeRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    paths: list
+    zones: dict
+
+
+class LoadRecipeRequest(BaseModel):
+    recipe_id: int
+    
+class UpdateRecipeRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    paths: list
+    zones: dict
 
 
 def _discover_existing_sections(part_dir: Path) -> list[int]:
@@ -174,6 +199,18 @@ def apply(req: ApplyRequest):
     return {"status": "ok"}
 
 
+@app.post("/api/opc/write-paths")
+def write_paths_endpoint(req: WritePathsRequest):
+    from app.opc_service import write_paths
+
+    if not is_connected():
+        raise HTTPException(status_code=500, detail="OPC UA not connected")
+
+    write_paths(req.paths)
+
+    return {"status": "ok"}
+
+
 def load_section_zones(zones_path: Path) -> list[dict[str, Any]]:
     if not zones_path.exists():
         return []
@@ -214,6 +251,35 @@ def collect_part_zone_ids(part_dir: Path, exclude_section_index: int | None = No
         "used_ids": sorted(used_ids),
         "by_section": by_section,
     }
+    
+def _recipe_file(part_id: str) -> Path:
+    return RECIPES_ROOT / f"{part_id}.json"
+
+
+def _load_recipe_list(part_id: str) -> list[dict[str, Any]]:
+    path = _recipe_file(part_id)
+    if not path.exists():
+        return []
+
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_recipe_list(part_id: str, recipes: list[dict[str, Any]]) -> None:
+    path = _recipe_file(part_id)
+    path.write_text(json.dumps(recipes, indent=2))
+
+
+# Helper to compare recipe IDs safely
+def _recipe_id_matches(recipe: dict[str, Any], recipe_id: int) -> bool:
+    try:
+        return int(recipe.get("id", -1)) == recipe_id
+    except Exception:
+        return False
+
 
 
 @app.get("/api/editor/parts/{part_id}/sections/{section_index}", dependencies=[Depends(admin_dep)])
@@ -421,6 +487,100 @@ def editor_import_overlay(part_id: str, section_index: int):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Import failed: {e}")
+
+
+@app.get("/api/recipes/{part_id}")
+def get_recipes(part_id: str):
+    return _load_recipe_list(part_id)
+
+
+@app.post("/api/recipes/{part_id}/save")
+def save_recipe(part_id: str, req: SaveRecipeRequest):
+    existing = _load_recipe_list(part_id)
+
+    next_id = max(
+        (int(r.get("id", 0)) for r in existing if isinstance(r, dict)),
+        default=0,
+    ) + 1
+
+    new_recipe = {
+        "id": next_id,
+        "name": req.name,
+        "description": req.description,
+        "paths": req.paths,
+        "zones": req.zones,
+    }
+
+    existing.append(new_recipe)
+    _save_recipe_list(part_id, existing)
+
+    return {"ok": True, "recipe": new_recipe}
+
+
+@app.post("/api/recipes/{part_id}/load")
+def load_recipe(part_id: str, req: LoadRecipeRequest):
+    recipes = _load_recipe_list(part_id)
+
+    recipe = next((r for r in recipes if _recipe_id_matches(r, req.recipe_id)), None)
+
+    if not recipe:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+
+    if not is_connected():
+        raise HTTPException(status_code=409, detail="OPC not connected")
+
+    from app.opc_service import write_paths
+
+    write_paths(recipe.get("paths", []))
+    write_zones(part_id, recipe.get("zones", {}))
+
+    return recipe
+
+@app.put("/api/admin/recipes/{part_id}/{recipe_id}", dependencies=[Depends(admin_dep)])
+def update_recipe(part_id: str, recipe_id: int, req: UpdateRecipeRequest):
+    recipes = _load_recipe_list(part_id)
+
+    updated_recipe = None
+    for recipe in recipes:
+        if _recipe_id_matches(recipe, recipe_id):
+            recipe["name"] = req.name
+            recipe["description"] = req.description
+            recipe["paths"] = req.paths
+            recipe["zones"] = req.zones
+            updated_recipe = recipe
+            break
+
+    if updated_recipe is None:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+
+    _save_recipe_list(part_id, recipes)
+    return {"ok": True, "recipe": updated_recipe}
+
+
+@app.delete("/api/admin/recipes/{part_id}/{recipe_id}", dependencies=[Depends(admin_dep)])
+def delete_recipe(part_id: str, recipe_id: int):
+    recipes = _load_recipe_list(part_id)
+    filtered = [r for r in recipes if not _recipe_id_matches(r, recipe_id)]
+
+    if len(filtered) == len(recipes):
+        raise HTTPException(status_code=404, detail="Recipe not found")
+
+    _save_recipe_list(part_id, filtered)
+    return {"ok": True}
+
+
+@app.get("/api/opc/force")
+def opc_force():
+    from app.opc_service import get_force_reading
+
+    value = get_force_reading()
+
+    return {"value": value}
+
+
+@app.get("/api/opc/paths")
+def opc_paths():
+    return {"paths": get_paths()}
 
 
 @app.get("/health")

@@ -10,6 +10,15 @@ const ORIENTATION_LABELS = {
 
 const HEADER_HEIGHT = 96;
 
+function getDefaultPaths() {
+  return [
+    { passes: 0, grit: 80, force: 10 },
+    { passes: 0, grit: 120, force: 10 },
+    { passes: 0, grit: 180, force: 10 },
+    { passes: 0, force: 10 },
+  ];
+}
+
 export default function PartPage() {
   const { partId } = useParams();
 
@@ -24,6 +33,48 @@ export default function PartPage() {
   const [debugOrientationOverride, setDebugOrientationOverride] =
     useState("live");
   const [isNarrow, setIsNarrow] = useState(false);
+
+  const [forceReading, setForceReading] = useState(null);
+
+  const [paths, setPaths] = useState(() => getDefaultPaths());
+
+  const [recipes, setRecipes] = useState([]);
+  const [selectedRecipeId, setSelectedRecipeId] = useState(null);
+  const [recipesLoading, setRecipesLoading] = useState(false);
+  const [saveRecipeOpen, setSaveRecipeOpen] = useState(false);
+  const [saveRecipeBusy, setSaveRecipeBusy] = useState(false);
+  const [loadRecipeBusy, setLoadRecipeBusy] = useState(false);
+  const [recipeNameInput, setRecipeNameInput] = useState("");
+  const [recipeDescriptionInput, setRecipeDescriptionInput] = useState("");
+
+  const writeTimeoutRef = useRef(null);
+
+  async function refreshRecipes() {
+    try {
+      setRecipesLoading(true);
+      const res = await fetch(`/api/recipes/${partId}`);
+
+      if (!res.ok) {
+        setRecipes([]);
+        return;
+      }
+
+      const data = await res.json();
+      setRecipes(Array.isArray(data) ? data : []);
+    } catch {
+      setRecipes([]);
+    } finally {
+      setRecipesLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      if (writeTimeoutRef.current) {
+        clearTimeout(writeTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     async function load() {
@@ -89,6 +140,298 @@ export default function PartPage() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function pollForce() {
+      try {
+        const res = await fetch("/api/opc/force");
+
+        if (!res.ok) {
+          if (!cancelled) setForceReading(null);
+          return;
+        }
+
+        const data = await res.json();
+
+        if (!cancelled) {
+          setForceReading(typeof data.value === "number" ? data.value : null);
+        }
+      } catch {
+        if (!cancelled) setForceReading(null);
+      }
+    }
+
+    pollForce();
+    const t = setInterval(pollForce, 500);
+
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, []);
+
+  useEffect(() => {
+    refreshRecipes();
+  }, [partId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPaths() {
+      try {
+        const res = await fetch("/api/opc/paths");
+
+        if (!res.ok) {
+          if (!cancelled) setPaths(getDefaultPaths());
+          return;
+        }
+
+        const data = await res.json();
+
+        if (!cancelled) {
+          if (Array.isArray(data?.paths)) {
+            setPaths(normalizeRecipePaths(data.paths));
+          } else {
+            setPaths(getDefaultPaths());
+          }
+        }
+      } catch {
+        if (!cancelled) setPaths(getDefaultPaths());
+      }
+    }
+
+    loadPaths();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function writePathsToOPC(updatedPaths) {
+    // Do not attempt writes if OPC is disconnected
+    if (!opcConnected) {
+      return;
+    }
+    clearTimeout(writeTimeoutRef.current);
+
+    writeTimeoutRef.current = setTimeout(() => {
+      fetch("/api/opc/write-paths", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ paths: updatedPaths }),
+      });
+    }, 100);
+  }
+
+  function updatePath(index, field, value) {
+    let nextValue = value;
+
+    if (field === "passes") {
+      nextValue = Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+    }
+
+    if (field === "force") {
+      nextValue = Number.isFinite(value)
+        ? Math.max(0, Math.min(20, value))
+        : 10;
+    }
+
+    setPaths((prev) => {
+      const next = [...prev];
+      next[index] = { ...next[index], [field]: nextValue };
+
+      writePathsToOPC(next);
+      return next;
+    });
+  }
+
+  function createEmptyZoneState() {
+    const next = {};
+    for (let i = 1; i <= 40; i++) next[i] = false;
+    return next;
+  }
+
+  function normalizeRecipePaths(rawPaths) {
+    const defaults = getDefaultPaths();
+
+    if (!Array.isArray(rawPaths)) {
+      return defaults;
+    }
+
+    return defaults.map((defaultPath, index) => {
+      const raw =
+        rawPaths[index] && typeof rawPaths[index] === "object"
+          ? rawPaths[index]
+          : {};
+
+      const next = {
+        ...defaultPath,
+        passes: Number.isFinite(Number(raw.passes))
+          ? Math.max(0, Math.trunc(Number(raw.passes)))
+          : defaultPath.passes,
+        force: Number.isFinite(Number(raw.force))
+          ? Math.max(0, Math.min(20, Number(raw.force)))
+          : defaultPath.force,
+      };
+
+      if (index < 3) {
+        const grit = Number(raw.grit);
+        next.grit = [80, 120, 180].includes(grit) ? grit : defaultPath.grit;
+      }
+
+      return next;
+    });
+  }
+
+  function normalizeRecipeZones(rawZones) {
+    const next = createEmptyZoneState();
+
+    if (!rawZones || typeof rawZones !== "object") {
+      return next;
+    }
+
+    for (let i = 1; i <= 40; i++) {
+      next[i] = !!(rawZones[i] || rawZones[String(i)]);
+    }
+
+    return next;
+  }
+
+  async function handleSaveRecipe() {
+    const name = recipeNameInput.trim();
+    const description = recipeDescriptionInput.trim();
+
+    if (!name) {
+      alert("Recipe name is required");
+      return;
+    }
+
+    try {
+      setSaveRecipeBusy(true);
+
+      const res = await fetch(`/api/recipes/${partId}/save`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name,
+          description,
+          paths,
+          zones: zoneState,
+        }),
+      });
+
+      if (!res.ok) {
+        let msg = "Save recipe failed";
+        try {
+          const err = await res.json();
+          msg = err.detail || msg;
+        } catch {}
+        alert(msg);
+        return;
+      }
+
+      setSaveRecipeOpen(false);
+      setRecipeNameInput("");
+      setRecipeDescriptionInput("");
+      await refreshRecipes();
+    } catch {
+      alert("Server error");
+    } finally {
+      setSaveRecipeBusy(false);
+    }
+  }
+
+  async function handleLoadRecipe() {
+    if (!selectedRecipeId) {
+      alert("Select a recipe first");
+      return;
+    }
+
+    const isDebugMode = debugOrientationOverride !== "live";
+
+    if (!isDebugMode && !opcConnected) {
+      alert("OPC is disconnected");
+      return;
+    }
+
+    const selectedRecipe = recipes.find((r) => r.id === selectedRecipeId);
+    if (!selectedRecipe) {
+      alert("Recipe not found");
+      return;
+    }
+
+    try {
+      setLoadRecipeBusy(true);
+
+      let recipeData;
+
+      if (isDebugMode) {
+        recipeData = selectedRecipe;
+      } else {
+        const res = await fetch(`/api/recipes/${partId}/load`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            recipe_id: selectedRecipeId,
+          }),
+        });
+
+        if (!res.ok) {
+          let msg = "Load recipe failed";
+          try {
+            const err = await res.json();
+            msg = err.detail || msg;
+          } catch {}
+          alert(msg);
+          return;
+        }
+
+        recipeData = await res.json();
+      }
+
+      const nextPaths = normalizeRecipePaths(recipeData?.paths);
+      const nextZones = normalizeRecipeZones(recipeData?.zones);
+
+      setPaths(nextPaths);
+      setZoneState(nextZones);
+
+      if (!isDebugMode) {
+        writePathsToOPC(nextPaths);
+
+        const applyRes = await fetch("/api/apply", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            part_id: partId,
+            zones: nextZones,
+          }),
+        });
+
+        if (!applyRes.ok) {
+          let msg = "Recipe apply failed";
+          try {
+            const err = await applyRes.json();
+            msg = err.detail || msg;
+          } catch {}
+          alert(msg);
+        }
+      }
+    } catch {
+      alert("Server error");
+    } finally {
+      setLoadRecipeBusy(false);
+    }
+  }
+
   const effectiveOrientation =
     debugOrientationOverride === "live"
       ? tableOrientation
@@ -105,7 +448,8 @@ export default function PartPage() {
   const needsZoneSetup = useMemo(() => {
     if (!part) return false;
     if (part.configured === false) return true;
-    if (!Array.isArray(part.sections) || part.sections.length === 0) return true;
+    if (!Array.isArray(part.sections) || part.sections.length === 0)
+      return true;
     if (totalZoneCount === 0) return true;
     return false;
   }, [part, totalZoneCount]);
@@ -208,9 +552,7 @@ export default function PartPage() {
   }
 
   function clearAll() {
-    const z = {};
-    for (let i = 1; i <= 40; i++) z[i] = false;
-    setZoneState(z);
+    setZoneState(createEmptyZoneState());
   }
 
   function selectAllAvailable() {
@@ -245,8 +587,6 @@ export default function PartPage() {
         alert(msg);
         return;
       }
-
-
     } catch {
       alert("Server error");
     } finally {
@@ -418,8 +758,10 @@ export default function PartPage() {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: isNarrow ? "1fr" : "minmax(0, 1fr) 300px",
-          gap: 14,
+          gridTemplateColumns: isNarrow
+            ? "1fr"
+            : "max-content minmax(0, 1fr) 300px",
+          gap: 10,
           alignItems: "stretch",
           width: "100%",
           flex: 1,
@@ -427,6 +769,244 @@ export default function PartPage() {
           overflow: "hidden",
         }}
       >
+        <div
+          style={{
+            display: "grid",
+            gap: 10,
+            alignContent: "start",
+            alignItems: "start",
+            overflow: "auto",
+            minHeight: 0,
+            maxHeight: "100%",
+            width: "fit-content",
+            minWidth: 0,
+            paddingRight: 2,
+          }}
+        >
+          {/* FORCE */}
+          <Card title="Live Force Reading">
+            <div style={{ fontSize: 28, fontWeight: 700 }}>
+              {forceReading !== null ? forceReading.toFixed(2) : "No Reading"}
+            </div>
+          </Card>
+
+          {/* RECIPE SETUP */}
+          <Card title="Recipe Setup">
+            {paths.map((p, i) => (
+              <div
+                key={i}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "16px 58px 88px 58px",
+                  columnGap: 6,
+                  rowGap: 3,
+                  alignItems: "end",
+                  marginBottom: i === paths.length - 1 ? 0 : 8,
+                }}
+              >
+                <span
+                  style={{
+                    fontWeight: 700,
+                    alignSelf: "center",
+                  }}
+                >
+                  {i + 1}.
+                </span>
+
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: "#6b7280",
+                    fontWeight: 600,
+                  }}
+                >
+                  Passes
+                </span>
+
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: "#6b7280",
+                    fontWeight: 600,
+                  }}
+                >
+                  {i < 3 ? "Grit" : "Material"}
+                </span>
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: "#6b7280",
+                    fontWeight: 600,
+                  }}
+                >
+                  Force
+                </span>
+
+                <div />
+
+                <input
+                  type="number"
+                  min="0"
+                  value={p.passes}
+                  onChange={(e) =>
+                    updatePath(i, "passes", Number(e.target.value))
+                  }
+                  style={{
+                    width: 58,
+                    padding: "7px 8px",
+                    border: "1px solid #d1d5db",
+                    borderRadius: 8,
+                    boxSizing: "border-box",
+                  }}
+                />
+
+                {i < 3 ? (
+                  <select
+                    value={p.grit}
+                    onChange={(e) =>
+                      updatePath(i, "grit", Number(e.target.value))
+                    }
+                    style={{
+                      width: 88,
+                      padding: "7px 8px",
+                      border: "1px solid #d1d5db",
+                      borderRadius: 8,
+                      background: "#fff",
+                      boxSizing: "border-box",
+                    }}
+                  >
+                    {[80, 120, 180].map((g) => (
+                      <option key={g} value={g}>
+                        {g}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div
+                    style={{
+                      width: 88,
+                      padding: "7px 8px",
+                      border: "1px solid #e5e7eb",
+                      borderRadius: 8,
+                      background: "#f9fafb",
+                      color: "#374151",
+                      fontWeight: 600,
+                      boxSizing: "border-box",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    Scotch
+                  </div>
+                )}
+
+                <input
+                  type="number"
+                  min="0"
+                  max="20"
+                  step="1"
+                  value={p.force ?? 10}
+                  onChange={(e) =>
+                    updatePath(i, "force", Number(e.target.value))
+                  }
+                  style={{
+                    width: 58,
+                    padding: "7px 8px",
+                    border: "1px solid #d1d5db",
+                    borderRadius: 8,
+                    boxSizing: "border-box",
+                  }}
+                />
+              </div>
+            ))}
+          </Card>
+
+          {/* RECIPES */}
+          <Card title="Recipes">
+            <div style={{ maxHeight: 200, overflowY: "auto" }}>
+              {recipesLoading && (
+                <div
+                  style={{ fontSize: 13, color: "#6b7280", marginBottom: 6 }}
+                >
+                  Loading recipes...
+                </div>
+              )}
+
+              {!recipesLoading && recipes.length === 0 && (
+                <div
+                  style={{ fontSize: 13, color: "#6b7280", marginBottom: 2 }}
+                >
+                  No recipes saved
+                </div>
+              )}
+
+              {recipes.map((r) => (
+                <div
+                  key={r.id}
+                  onClick={() =>
+                    setSelectedRecipeId((prev) => (prev === r.id ? null : r.id))
+                  }
+                  style={{
+                    padding: 8,
+                    border:
+                      selectedRecipeId === r.id
+                        ? "2px solid #2563eb"
+                        : "1px solid #ddd",
+                    borderRadius: 8,
+                    marginBottom: 6,
+                    cursor: "pointer",
+                  }}
+                >
+                  <div style={{ fontWeight: 600 }}>{r.name}</div>
+                  <div style={{ fontSize: 12, color: "#666" }}>
+                    {r.description}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+              <button
+                onClick={handleLoadRecipe}
+                disabled={
+                  !selectedRecipeId ||
+                  loadRecipeBusy ||
+                  (!opcConnected && debugOrientationOverride === "live")
+                }
+                style={{
+                  ...buttonStyle(
+                    !selectedRecipeId ||
+                      loadRecipeBusy ||
+                      (!opcConnected && debugOrientationOverride === "live"),
+                  ),
+                  textAlign: "center",
+                  flex: 1,
+                  padding: "8px 12px",
+                }}
+              >
+                {loadRecipeBusy ? "Loading..." : "Load"}
+              </button>
+              <button
+                onClick={() => {
+                  setRecipeNameInput("");
+                  setRecipeDescriptionInput("");
+                  setSaveRecipeOpen(true);
+                }}
+                style={{
+                  ...buttonStyle(),
+                  textAlign: "center",
+                  flex: 1,
+                  padding: "8px 12px",
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </Card>
+        </div>
+
+        {/* CANVAS COLUMN */}
         <div
           style={{
             border: "1px solid #d1d5db",
@@ -551,16 +1131,24 @@ export default function PartPage() {
                 onClick={applyZones}
                 disabled={!opcConnected || applyBusy || autoApplyBusy}
                 title={!opcConnected ? "OPC disconnected" : ""}
-                style={primaryButtonStyle(!opcConnected || applyBusy || autoApplyBusy)}
+                style={primaryButtonStyle(
+                  !opcConnected || applyBusy || autoApplyBusy,
+                )}
               >
-                {applyBusy ? "Applying..." : autoApplyBusy ? "Updating..." : "Apply"}
+                {applyBusy
+                  ? "Applying..."
+                  : autoApplyBusy
+                    ? "Updating..."
+                    : "Apply"}
               </button>
             </div>
           </Card>
 
           <Card title="Debug">
             <div style={{ display: "grid", gap: 8 }}>
-              <label style={{ fontSize: 13, fontWeight: 600, color: "#4b5563" }}>
+              <label
+                style={{ fontSize: 13, fontWeight: 600, color: "#4b5563" }}
+              >
                 Orientation override
               </label>
               <select
@@ -602,17 +1190,178 @@ export default function PartPage() {
           </Card>
 
           <Card title="Admin">
-            <button
-              onClick={() => {
-                window.location.href = `/admin/editor/${part.part_id}/1?return=part`;
-              }}
-              style={buttonStyle()}
-            >
-              Edit Zones
-            </button>
+            <div style={{ display: "grid", gap: 8 }}>
+              <button
+                onClick={() => {
+                  window.location.href = `/admin/editor/${part.part_id}/1?return=part`;
+                }}
+                style={buttonStyle()}
+              >
+                Edit Zones
+              </button>
+
+              <button
+                onClick={() => {
+                  window.location.href = `/admin/recipes/${part.part_id}?return=part`;
+                }}
+                style={buttonStyle()}
+              >
+                Edit Recipes
+              </button>
+            </div>
           </Card>
         </div>
       </div>
+
+      {saveRecipeOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.35)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: 16,
+          }}
+          onClick={() => {
+            if (saveRecipeBusy) return;
+            setSaveRecipeOpen(false);
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: 420,
+              background: "#ffffff",
+              border: "1px solid #d1d5db",
+              borderRadius: 18,
+              boxShadow: "0 20px 50px rgba(15, 23, 42, 0.18)",
+              padding: "22px 20px",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 22,
+                fontWeight: 800,
+                color: "#111827",
+                marginBottom: 8,
+              }}
+            >
+              Save Recipe
+            </div>
+
+            <div
+              style={{
+                fontSize: 13,
+                color: "#6b7280",
+                lineHeight: 1.5,
+                marginBottom: 16,
+              }}
+            >
+              Save the current path setup and selected zones for this part.
+            </div>
+
+            <div style={{ display: "grid", gap: 12 }}>
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    color: "#374151",
+                    marginBottom: 6,
+                  }}
+                >
+                  Recipe Name
+                </label>
+                <input
+                  type="text"
+                  value={recipeNameInput}
+                  onChange={(e) => setRecipeNameInput(e.target.value)}
+                  placeholder="Enter recipe name"
+                  style={{
+                    width: "100%",
+                    padding: "10px 12px",
+                    border: "1px solid #d1d5db",
+                    borderRadius: 10,
+                    boxSizing: "border-box",
+                    fontSize: 14,
+                  }}
+                  disabled={saveRecipeBusy}
+                />
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    color: "#374151",
+                    marginBottom: 6,
+                  }}
+                >
+                  Description
+                </label>
+                <textarea
+                  value={recipeDescriptionInput}
+                  onChange={(e) => setRecipeDescriptionInput(e.target.value)}
+                  placeholder="Optional description"
+                  rows={3}
+                  style={{
+                    width: "100%",
+                    padding: "10px 12px",
+                    border: "1px solid #d1d5db",
+                    borderRadius: 10,
+                    boxSizing: "border-box",
+                    fontSize: 14,
+                    resize: "vertical",
+                    fontFamily: "Arial, sans-serif",
+                  }}
+                  disabled={saveRecipeBusy}
+                />
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+                marginTop: 18,
+              }}
+            >
+              <button
+                onClick={() => setSaveRecipeOpen(false)}
+                disabled={saveRecipeBusy}
+                style={{
+                  ...buttonStyle(saveRecipeBusy),
+                  width: "auto",
+                  textAlign: "center",
+                  padding: "9px 14px",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveRecipe}
+                disabled={saveRecipeBusy}
+                style={{
+                  ...primaryButtonStyle(saveRecipeBusy),
+                  width: "auto",
+                  textAlign: "center",
+                  padding: "9px 14px",
+                }}
+              >
+                {saveRecipeBusy ? "Saving..." : "Save Recipe"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -761,7 +1510,7 @@ function Card({ title, children }) {
         border: "1px solid #d1d5db",
         borderRadius: 14,
         background: "#fff",
-        padding: 12,
+        padding: 10,
         width: "100%",
         boxSizing: "border-box",
       }}
@@ -770,7 +1519,7 @@ function Card({ title, children }) {
         style={{
           fontWeight: 700,
           fontSize: 15,
-          marginBottom: 12,
+          marginBottom: 10,
           color: "#111827",
         }}
       >
