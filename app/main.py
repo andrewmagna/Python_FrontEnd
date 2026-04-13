@@ -40,6 +40,9 @@ parts_root = Path(cfg.parts_root)
 RECIPES_ROOT = Path("data/recipes")
 RECIPES_ROOT.mkdir(parents=True, exist_ok=True)
 
+LAST_STATE_ROOT = Path("data/last_state")
+LAST_STATE_ROOT.mkdir(parents=True, exist_ok=True)
+
 if parts_root.exists():
     app.mount("/parts", StaticFiles(directory=parts_root), name="parts")
 
@@ -95,6 +98,12 @@ class UpdateRecipeRequest(BaseModel):
     paths: list
     zones: dict
 
+class SaveLastStateRequest(BaseModel):
+    orientation: Optional[int] = None
+    zones: dict
+    paths: list
+    selected_recipe_id: Optional[int] = None
+    saved_at: Optional[int] = None
 
 def _discover_existing_sections(part_dir: Path) -> list[int]:
     sections_dir = part_dir / "sections"
@@ -271,6 +280,58 @@ def _load_recipe_list(part_id: str) -> list[dict[str, Any]]:
 def _save_recipe_list(part_id: str, recipes: list[dict[str, Any]]) -> None:
     path = _recipe_file(part_id)
     path.write_text(json.dumps(recipes, indent=2))
+    
+def _last_state_file(part_id: str) -> Path:
+    return LAST_STATE_ROOT / f"{part_id}.json"
+
+
+def _load_last_state(part_id: str) -> Optional[dict[str, Any]]:
+    path = _last_state_file(part_id)
+    if not path.exists():
+        return None
+
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _save_last_state(part_id: str, payload: dict[str, Any]) -> None:
+    path = _last_state_file(part_id)
+    path.write_text(json.dumps(payload, indent=2))
+
+
+def _zone_ids_from_zone_map(zones: dict[str, Any] | dict[int, Any]) -> list[int]:
+    zone_ids: list[int] = []
+
+    if not isinstance(zones, dict):
+        return zone_ids
+
+    for i in range(1, 41):
+        if zones.get(i) or zones.get(str(i)):
+            zone_ids.append(i)
+
+    return zone_ids
+
+
+def _valid_zone_ids_for_orientation(part_id: str, orientation: Optional[int]) -> set[int]:
+    if orientation not in (1, 2, 3, 4):
+        return set()
+
+    part = get_part(part_id)
+    valid_ids: set[int] = set()
+
+    for section in part.get("sections", []):
+        for zone in section.get("zones", []):
+            if (
+                isinstance(zone, dict)
+                and isinstance(zone.get("zone_id"), int)
+                and zone.get("orientation") == orientation
+            ):
+                valid_ids.add(zone["zone_id"])
+
+    return valid_ids
 
 
 # Helper to compare recipe IDs safely
@@ -494,6 +555,38 @@ def get_recipes(part_id: str):
     return _load_recipe_list(part_id)
 
 
+@app.get("/api/parts/{part_id}/last-state")
+def get_last_state(part_id: str):
+    state = _load_last_state(part_id)
+    return state or {
+        "part_id": part_id,
+        "orientation": None,
+        "zones": {},
+        "paths": [],
+        "selected_recipe_id": None,
+    }
+
+
+@app.post("/api/parts/{part_id}/last-state")
+def save_last_state(part_id: str, req: SaveLastStateRequest):
+    incoming_saved_at = int(req.saved_at or 0)
+    existing = _load_last_state(part_id) or {}
+    existing_saved_at = int(existing.get("saved_at") or 0)
+
+    if incoming_saved_at < existing_saved_at:
+        return {"ok": True, "ignored": True}
+
+    payload = {
+        "part_id": part_id,
+        "orientation": req.orientation if req.orientation in (1, 2, 3, 4) else None,
+        "zones": req.zones if isinstance(req.zones, dict) else {},
+        "paths": req.paths if isinstance(req.paths, list) else [],
+        "selected_recipe_id": req.selected_recipe_id,
+        "saved_at": incoming_saved_at,
+    }
+    _save_last_state(part_id, payload)
+    return {"ok": True}
+
 @app.post("/api/recipes/{part_id}/save")
 def save_recipe(part_id: str, req: SaveRecipeRequest):
     existing = _load_recipe_list(part_id)
@@ -525,6 +618,26 @@ def load_recipe(part_id: str, req: LoadRecipeRequest):
 
     if not recipe:
         raise HTTPException(status_code=404, detail="Recipe not found")
+
+    current_orientation = get_table_orientation()
+    if current_orientation not in (1, 2, 3, 4):
+        raise HTTPException(
+            status_code=400,
+            detail="Recipe cannot be loaded because the current table orientation is unavailable.",
+        )
+
+    valid_zone_ids = _valid_zone_ids_for_orientation(part_id, current_orientation)
+    recipe_zone_ids = _zone_ids_from_zone_map(recipe.get("zones", {}))
+    invalid_zone_ids = [zone_id for zone_id in recipe_zone_ids if zone_id not in valid_zone_ids]
+
+    if invalid_zone_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Recipe cannot be loaded because these saved zones are not available "
+                f"for the current table orientation: {invalid_zone_ids}"
+            ),
+        )
 
     if not is_connected():
         raise HTTPException(status_code=409, detail="OPC not connected")

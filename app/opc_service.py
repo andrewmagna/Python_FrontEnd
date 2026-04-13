@@ -474,7 +474,7 @@ def write_paths(paths):
         if passes_node is not None:
             _set_node_value(passes_node, passes_value, passes_node_name)
 
-        force_node_name = f"Pass{path_num}_Force"
+        force_node_name = f"Path{path_num}_Force"
         force_node = _path_force_nodes.get(path_num)
         if force_node is None:
             force_node = find_node_by_browse_name(_objects_node, force_node_name)

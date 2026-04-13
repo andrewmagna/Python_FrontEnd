@@ -26,7 +26,7 @@ export default function PartPage() {
   const [zoneState, setZoneState] = useState({});
   const [hoveredZone, setHoveredZone] = useState(null);
   const [opcConnected, setOpcConnected] = useState(false);
-  const [applyBusy, setApplyBusy] = useState(false);
+  const [opcStatusLoaded, setOpcStatusLoaded] = useState(false);
   const [autoApplyBusy, setAutoApplyBusy] = useState(false);
   const [tableOrientation, setTableOrientation] = useState(null);
   const [tableOrientationDegrees, setTableOrientationDegrees] = useState(null);
@@ -48,6 +48,9 @@ export default function PartPage() {
   const [recipeDescriptionInput, setRecipeDescriptionInput] = useState("");
 
   const writeTimeoutRef = useRef(null);
+  const saveLastStateTimeoutRef = useRef(null);
+  const hasLoadedLastStateRef = useRef(false);
+  const isRestoringLastStateRef = useRef(false);
 
   async function refreshRecipes() {
     try {
@@ -73,6 +76,9 @@ export default function PartPage() {
       if (writeTimeoutRef.current) {
         clearTimeout(writeTimeoutRef.current);
       }
+      if (saveLastStateTimeoutRef.current) {
+        clearTimeout(saveLastStateTimeoutRef.current);
+      }
     };
   }, []);
 
@@ -86,6 +92,10 @@ export default function PartPage() {
       const z = {};
       for (let i = 1; i <= 40; i++) z[i] = false;
       setZoneState(z);
+      setSelectedRecipeId(null);
+      hasLoadedLastStateRef.current = false;
+      isRestoringLastStateRef.current = false;
+      setOpcStatusLoaded(false);
     }
 
     load();
@@ -121,12 +131,14 @@ export default function PartPage() {
               ? data.table_orientation_degrees
               : null,
           );
+          setOpcStatusLoaded(true);
         }
       } catch {
         if (!cancelled) {
           setOpcConnected(false);
           setTableOrientation(null);
           setTableOrientationDegrees(null);
+          setOpcStatusLoaded(true);
         }
       }
     }
@@ -145,7 +157,9 @@ export default function PartPage() {
 
     async function pollForce() {
       try {
-        const res = await fetch("/api/opc/force");
+        const res = await fetch(`/api/opc/force?t=${Date.now()}`, {
+          cache: "no-store",
+        });
 
         if (!res.ok) {
           if (!cancelled) setForceReading(null);
@@ -171,42 +185,137 @@ export default function PartPage() {
     };
   }, []);
 
+  const effectiveOrientation =
+    debugOrientationOverride === "live"
+      ? tableOrientation
+      : Number(debugOrientationOverride);
+
   useEffect(() => {
     refreshRecipes();
   }, [partId]);
 
+
   useEffect(() => {
+    if (!part) return;
+    if (!opcStatusLoaded) return;
+    if (hasLoadedLastStateRef.current) return;
+
     let cancelled = false;
 
-    async function loadPaths() {
-      try {
-        const res = await fetch("/api/opc/paths");
+    async function restoreLastState() {
+      isRestoringLastStateRef.current = true;
+      hasLoadedLastStateRef.current = true;
 
+      try {
+        if (!opcConnected) {
+          if (!cancelled) {
+            setPaths(getDefaultPaths());
+            setZoneState(createEmptyZoneState());
+            setSelectedRecipeId(null);
+          }
+          return;
+        }
+
+        const res = await fetch(`/api/parts/${partId}/last-state`);
         if (!res.ok) {
-          if (!cancelled) setPaths(getDefaultPaths());
+          if (!cancelled) {
+            setPaths(getDefaultPaths());
+            setZoneState(createEmptyZoneState());
+            setSelectedRecipeId(null);
+          }
           return;
         }
 
         const data = await res.json();
+        if (cancelled || !data || typeof data !== "object") {
+          return;
+        }
+
+        const nextPaths =
+          Array.isArray(data.paths) && data.paths.length > 0
+            ? normalizeRecipePaths(data.paths)
+            : getDefaultPaths();
+
+        const savedOrientation = [1, 2, 3, 4].includes(data.orientation)
+          ? data.orientation
+          : null;
+        const orientationMatches =
+          savedOrientation !== null &&
+          effectiveOrientation !== null &&
+          savedOrientation === effectiveOrientation;
+
+        const nextZones = orientationMatches
+          ? normalizeRecipeZones(data.zones)
+          : createEmptyZoneState();
+
+        const parsedSelectedRecipeId = Number(data.selected_recipe_id);
+        const nextSelectedRecipeId =
+          orientationMatches && Number.isInteger(parsedSelectedRecipeId)
+            ? parsedSelectedRecipeId
+            : null;
 
         if (!cancelled) {
-          if (Array.isArray(data?.paths)) {
-            setPaths(normalizeRecipePaths(data.paths));
-          } else {
-            setPaths(getDefaultPaths());
-          }
+          setPaths(nextPaths);
+          setZoneState(nextZones);
+          setSelectedRecipeId(nextSelectedRecipeId);
+        }
+
+        if (debugOrientationOverride === "live" && opcConnected) {
+          writePathsToOPC(nextPaths);
+          await pushZoneState(nextZones);
         }
       } catch {
-        if (!cancelled) setPaths(getDefaultPaths());
+        if (!cancelled) {
+          setPaths(getDefaultPaths());
+          setZoneState(createEmptyZoneState());
+          setSelectedRecipeId(null);
+        }
+      } finally {
+        isRestoringLastStateRef.current = false;
       }
     }
 
-    loadPaths();
+    restoreLastState();
 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [
+    partId,
+    part,
+    effectiveOrientation,
+    opcConnected,
+    opcStatusLoaded,
+    debugOrientationOverride,
+  ]);
+
+  useEffect(() => {
+    if (!partId) return;
+    if (!hasLoadedLastStateRef.current) return;
+    if (isRestoringLastStateRef.current) return;
+
+    persistLastState(buildLastStatePayload());
+  }, [partId, zoneState, paths, selectedRecipeId, effectiveOrientation]);
+
+  useEffect(() => {
+    function handleBeforeUnload() {
+      flushLastState({ keepalive: true });
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "hidden") {
+        flushLastState({ keepalive: true });
+      }
+    }
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [partId, zoneState, paths, selectedRecipeId, effectiveOrientation]);
 
   function writePathsToOPC(updatedPaths) {
     // Do not attempt writes if OPC is disconnected
@@ -244,6 +353,13 @@ export default function PartPage() {
       next[index] = { ...next[index], [field]: nextValue };
 
       writePathsToOPC(next);
+      persistLastState(
+        buildLastStatePayload({
+          paths: next,
+          zones: zoneState,
+          selected_recipe_id: selectedRecipeId,
+        }),
+      );
       return next;
     });
   }
@@ -298,6 +414,59 @@ export default function PartPage() {
     }
 
     return next;
+  }
+
+  function getSelectedZoneIdsFromMap(zones) {
+    const ids = [];
+    for (let i = 1; i <= 40; i++) {
+      if (zones?.[i] || zones?.[String(i)]) {
+        ids.push(i);
+      }
+    }
+    return ids;
+  }
+
+  function buildLastStatePayload(overrides = {}) {
+    const nextOrientation = overrides.orientation ?? effectiveOrientation;
+    const nextZones = overrides.zones ?? zoneState;
+    const nextPaths = overrides.paths ?? paths;
+    const nextSelectedRecipeId =
+      overrides.selected_recipe_id ?? selectedRecipeId;
+
+    return {
+      orientation: [1, 2, 3, 4].includes(nextOrientation)
+        ? nextOrientation
+        : null,
+      zones: nextZones,
+      paths: nextPaths,
+      selected_recipe_id: nextSelectedRecipeId,
+      saved_at: Date.now(),
+    };
+  }
+
+  function persistLastState(nextState, options = {}) {
+    if (!partId) return;
+
+    if (saveLastStateTimeoutRef.current) {
+      clearTimeout(saveLastStateTimeoutRef.current);
+      saveLastStateTimeoutRef.current = null;
+    }
+
+    fetch(`/api/parts/${partId}/last-state`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(nextState),
+      keepalive: !!options.keepalive,
+    }).catch(() => {});
+  }
+
+  function flushLastState(options = {}) {
+    if (!hasLoadedLastStateRef.current) return;
+    if (isRestoringLastStateRef.current) return;
+
+    persistLastState(buildLastStatePayload(), options);
   }
 
   async function handleSaveRecipe() {
@@ -365,6 +534,20 @@ export default function PartPage() {
       return;
     }
 
+    const selectedRecipeZoneIds = getSelectedZoneIdsFromMap(
+      selectedRecipe.zones,
+    );
+    const invalidRecipeZoneIds = selectedRecipeZoneIds.filter(
+      (zoneId) => !validZoneIds.has(zoneId),
+    );
+
+    if (invalidRecipeZoneIds.length > 0) {
+      alert(
+        `Recipe cannot be loaded because these saved zones are not available for the current table orientation: ${invalidRecipeZoneIds.join(", ")}`,
+      );
+      return;
+    }
+
     try {
       setLoadRecipeBusy(true);
 
@@ -401,30 +584,14 @@ export default function PartPage() {
 
       setPaths(nextPaths);
       setZoneState(nextZones);
-
-      if (!isDebugMode) {
-        writePathsToOPC(nextPaths);
-
-        const applyRes = await fetch("/api/apply", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            part_id: partId,
-            zones: nextZones,
-          }),
-        });
-
-        if (!applyRes.ok) {
-          let msg = "Recipe apply failed";
-          try {
-            const err = await applyRes.json();
-            msg = err.detail || msg;
-          } catch {}
-          alert(msg);
-        }
-      }
+      persistLastState(
+        buildLastStatePayload({
+          paths: nextPaths,
+          zones: nextZones,
+          selected_recipe_id: selectedRecipeId,
+          orientation: effectiveOrientation,
+        }),
+      );
     } catch {
       alert("Server error");
     } finally {
@@ -432,10 +599,6 @@ export default function PartPage() {
     }
   }
 
-  const effectiveOrientation =
-    debugOrientationOverride === "live"
-      ? tableOrientation
-      : Number(debugOrientationOverride);
 
   const totalZoneCount = useMemo(() => {
     if (!part || !Array.isArray(part.sections)) return 0;
@@ -512,85 +675,96 @@ export default function PartPage() {
   async function toggleZone(id) {
     if (!validZoneIds.has(id)) return;
 
-    const wasSelected = !!zoneState[id];
+    const previousState = zoneState;
     const nextState = {
       ...zoneState,
-      [id]: !wasSelected,
+      [id]: !zoneState[id],
     };
 
     setZoneState(nextState);
+    persistLastState(
+      buildLastStatePayload({
+        zones: nextState,
+        paths,
+        selected_recipe_id: selectedRecipeId,
+      }),
+    );
+    await pushZoneState(nextState, () => setZoneState(previousState));
+  }
 
-    if (wasSelected) {
-      try {
-        setAutoApplyBusy(true);
+  async function clearAll() {
+    const previousState = zoneState;
+    const nextState = createEmptyZoneState();
 
-        const res = await fetch("/api/apply", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            part_id: partId,
-            zones: nextState,
-          }),
-        });
+    setZoneState(nextState);
+    persistLastState(
+      buildLastStatePayload({
+        zones: nextState,
+        paths,
+        selected_recipe_id: null,
+      }),
+    );
+    await pushZoneState(nextState, () => setZoneState(previousState));
+  }
 
-        if (!res.ok) {
-          let msg = "Auto-apply failed";
-          try {
-            const err = await res.json();
-            msg = err.detail || msg;
-          } catch {}
-          alert(msg);
-          setZoneState(zoneState);
-        }
-      } catch {
-        alert("Server error");
-        setZoneState(zoneState);
-      } finally {
-        setAutoApplyBusy(false);
-      }
+  async function selectAllAvailable() {
+    const previousState = zoneState;
+    const nextState = { ...zoneState };
+
+    for (const zoneId of validZoneIds) {
+      nextState[zoneId] = true;
     }
+
+    setZoneState(nextState);
+    persistLastState(
+      buildLastStatePayload({
+        zones: nextState,
+        paths,
+        selected_recipe_id: selectedRecipeId,
+      }),
+    );
+    await pushZoneState(nextState, () => setZoneState(previousState));
   }
 
-  function clearAll() {
-    setZoneState(createEmptyZoneState());
-  }
-
-  function selectAllAvailable() {
-    setZoneState((prev) => {
-      const next = { ...prev };
-      for (const zoneId of validZoneIds) {
-        next[zoneId] = true;
+  async function pushZoneState(nextZoneState, onErrorRestore = null) {
+    if (!opcConnected) {
+      alert("OPC is disconnected");
+      if (onErrorRestore) {
+        onErrorRestore();
       }
-      return next;
-    });
-  }
+      return;
+    }
 
-  async function applyZones() {
     try {
-      setApplyBusy(true);
+      setAutoApplyBusy(true);
 
       const res = await fetch("/api/apply", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           part_id: partId,
-          zones: zoneState,
+          zones: nextZoneState,
         }),
       });
 
       if (!res.ok) {
-        let msg = "Apply failed";
+        let msg = "Auto-apply failed";
         try {
           const err = await res.json();
           msg = err.detail || msg;
         } catch {}
         alert(msg);
-        return;
+        if (onErrorRestore) {
+          onErrorRestore();
+        }
       }
     } catch {
       alert("Server error");
+      if (onErrorRestore) {
+        onErrorRestore();
+      }
     } finally {
-      setApplyBusy(false);
+      setAutoApplyBusy(false);
     }
   }
 
@@ -614,7 +788,11 @@ export default function PartPage() {
         }}
       >
         <div style={{ marginBottom: 4, flex: "0 0 auto" }}>
-          <Link to="/" style={backLinkStyle}>
+          <Link
+            to="/"
+            style={backLinkStyle}
+            onClick={() => flushLastState({ keepalive: true })}
+          >
             ← <span style={{ verticalAlign: "middle" }}>Back to Parts</span>
           </Link>
         </div>
@@ -746,7 +924,11 @@ export default function PartPage() {
       }}
     >
       <div style={{ marginBottom: 4, flex: "0 0 auto" }}>
-        <Link to="/" style={backLinkStyle}>
+        <Link
+          to="/"
+          style={backLinkStyle}
+          onClick={() => flushLastState({ keepalive: true })}
+        >
           ← <span style={{ verticalAlign: "middle" }}>Back to Parts</span>
         </Link>
       </div>
@@ -1110,36 +1292,32 @@ export default function PartPage() {
 
           <Card title="Zone Actions">
             <div style={{ display: "grid", gap: 10 }}>
-              <button onClick={clearAll} style={buttonStyle()}>
+              <button
+                onClick={clearAll}
+                disabled={!opcConnected || autoApplyBusy}
+                title={!opcConnected ? "OPC disconnected" : ""}
+                style={buttonStyle(!opcConnected || autoApplyBusy)}
+              >
                 Clear All
               </button>
 
               <button
                 onClick={selectAllAvailable}
-                disabled={validZoneIds.size === 0}
-                title={
-                  validZoneIds.size === 0
-                    ? "No zones available for current orientation"
-                    : ""
+                disabled={
+                  validZoneIds.size === 0 || !opcConnected || autoApplyBusy
                 }
-                style={buttonStyle(validZoneIds.size === 0)}
-              >
-                Select All Available
-              </button>
-
-              <button
-                onClick={applyZones}
-                disabled={!opcConnected || applyBusy || autoApplyBusy}
-                title={!opcConnected ? "OPC disconnected" : ""}
-                style={primaryButtonStyle(
-                  !opcConnected || applyBusy || autoApplyBusy,
+                title={
+                  !opcConnected
+                    ? "OPC disconnected"
+                    : validZoneIds.size === 0
+                      ? "No zones available for current orientation"
+                      : ""
+                }
+                style={buttonStyle(
+                  validZoneIds.size === 0 || !opcConnected || autoApplyBusy,
                 )}
               >
-                {applyBusy
-                  ? "Applying..."
-                  : autoApplyBusy
-                    ? "Updating..."
-                    : "Apply"}
+                Select All Available
               </button>
             </div>
           </Card>
@@ -1466,8 +1644,8 @@ function SectionViewer({
               : !available
                 ? "rgba(107,114,128,0.14)"
                 : hovered
-                  ? "rgba(59,130,246,0.18)"
-                  : "rgba(107,114,128,0.05)";
+                  ? "rgba(59,130,246,0.32)"
+                  : "rgba(59,130,246,0.20)";
 
             const stroke = active
               ? "rgba(21,128,61,0.95)"
