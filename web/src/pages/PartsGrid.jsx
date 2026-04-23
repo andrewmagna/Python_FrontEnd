@@ -116,7 +116,17 @@ export default function PartsGrid() {
             return (
               <button
                 key={p.part_id}
-                onClick={() => navigate(`/part/${p.part_id}`)}
+                onClick={async () => {
+                  try {
+                    await fetch("/api/opc/select-part", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ part_id: p.part_id, display_name: p.display_name }),
+                    });
+                  } catch {}
+
+                  navigate(`/part/${p.part_id}`);
+                }}
                 style={{
                   textAlign: "left",
                   border: "1px solid #d1d5db",
@@ -133,12 +143,14 @@ export default function PartsGrid() {
                 }}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.transform = "translateY(-2px)";
-                  e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,0,0,0.08)";
+                  e.currentTarget.style.boxShadow =
+                    "0 8px 24px rgba(0,0,0,0.08)";
                   e.currentTarget.style.borderColor = "#93c5fd";
                 }}
                 onMouseLeave={(e) => {
                   e.currentTarget.style.transform = "translateY(0)";
-                  e.currentTarget.style.boxShadow = "0 1px 2px rgba(0,0,0,0.04)";
+                  e.currentTarget.style.boxShadow =
+                    "0 1px 2px rgba(0,0,0,0.04)";
                   e.currentTarget.style.borderColor = "#d1d5db";
                 }}
               >
@@ -197,7 +209,8 @@ export default function PartsGrid() {
                         fontWeight: 600,
                       }}
                     >
-                      {p.section_count} section{p.section_count === 1 ? "" : "s"}
+                      {p.section_count} section
+                      {p.section_count === 1 ? "" : "s"}
                     </span>
 
                     <span

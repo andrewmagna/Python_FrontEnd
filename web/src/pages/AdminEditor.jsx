@@ -23,7 +23,7 @@ export default function AdminEditor() {
 
   const returnTarget = searchParams.get("return") || "grid";
 
-  const [admin, setAdmin] = useState(false);
+  const [authorized, setAuthorized] = useState(false);
   const [loading, setLoading] = useState(true);
   const [imageUrl, setImageUrl] = useState("");
   const [imageSize, setImageSize] = useState({ width: 1920, height: 1080 });
@@ -183,18 +183,21 @@ export default function AdminEditor() {
 
     setLoading(true);
 
-    const statusRes = await fetch("/api/admin/status");
+    const statusRes = await fetch("/api/session");
     const statusData = await statusRes.json();
 
-    if (!statusData.admin) {
-      const next = encodeURIComponent(
-        `/admin/editor/${partId}/${sectionIndex}?return=${returnTarget}`,
-      );
-      navigate(`/admin/login?next=${next}`);
+    if (!statusData.authenticated) {
+      navigate("/login", { replace: true });
       return;
     }
 
-    setAdmin(true);
+    const role = statusData.user?.role;
+    if (role !== "admin") {
+      navigate("/", { replace: true });
+      return;
+    }
+
+    setAuthorized(true);
 
     const partRes = await fetch(`/api/parts/${partId}`);
     if (partRes.ok) {
@@ -1097,7 +1100,7 @@ export default function AdminEditor() {
 
   const selectedZone = zones.find((z) => z.zone_id === selectedZoneId) || null;
 
-  if (!admin || loading) {
+  if (!authorized || loading) {
     return <div style={{ padding: 20 }}>Loading editor...</div>;
   }
 

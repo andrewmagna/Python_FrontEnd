@@ -10,7 +10,15 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.admin_auth import admin_dep, clear_admin_cookie, is_admin, set_admin_cookie
+from app.admin_auth import (
+    admin_dep,
+    any_user_dep,
+    clear_session_cookie,
+    get_session,
+    is_admin,
+    set_session_cookie,
+    supervisor_or_admin_dep,
+)
 from app.audit import init_db, log_apply
 from app.config_store import AppConfig, load_config, save_config, validate_parts_root
 from app.opc_service import (
@@ -20,6 +28,10 @@ from app.opc_service import (
     get_table_orientation,
     get_table_orientation_degrees,
     get_paths,
+    write_user_name,
+    write_part_name,
+    write_recipe_name,
+    write_zone_list,
 )
 from app.overlay_import import import_polygons_from_overlay
 from app.parts_service import get_part, scan_parts
@@ -43,6 +55,12 @@ RECIPES_ROOT.mkdir(parents=True, exist_ok=True)
 LAST_STATE_ROOT = Path("data/last_state")
 LAST_STATE_ROOT.mkdir(parents=True, exist_ok=True)
 
+USERS_ROOT = Path("data/users")
+USERS_ROOT.mkdir(parents=True, exist_ok=True)
+USERS_FILE = USERS_ROOT / "users.json"
+if not USERS_FILE.exists():
+    USERS_FILE.write_text("[]", encoding="utf-8")
+
 if parts_root.exists():
     app.mount("/parts", StaticFiles(directory=parts_root), name="parts")
 
@@ -62,9 +80,13 @@ class ApplyRequest(BaseModel):
 
 class WritePathsRequest(BaseModel):
     paths: list
+class SelectPartRequest(BaseModel):
+    part_id: str
+    display_name: str
 
 
 class AdminLoginRequest(BaseModel):
+    username: str
     password: str
 
 
@@ -104,6 +126,15 @@ class SaveLastStateRequest(BaseModel):
     paths: list
     selected_recipe_id: Optional[int] = None
     saved_at: Optional[int] = None
+    
+class RFIDLoginRequest(BaseModel):
+    card_id: str
+
+
+class UserUpsertRequest(BaseModel):
+    display_name: str
+    role: str
+    card_id: str
 
 def _discover_existing_sections(part_dir: Path) -> list[int]:
     sections_dir = part_dir / "sections"
@@ -149,24 +180,128 @@ def _normalize_zone_for_response(zone: dict[str, Any]) -> dict[str, Any]:
 
 @app.get("/api/admin/status")
 def admin_status(request: Request):
-    return {"admin": is_admin(request)}
+    session = get_session(request)
+    return {
+        "admin": bool(session and session.get("role") == "admin"),
+        "authenticated": bool(session),
+        "user": session,
+    }
 
 
 @app.post("/api/admin/login")
 def admin_login(req: AdminLoginRequest, response: Response):
     cfg = load_config()
-    expected = getattr(cfg, "admin_password", "change_me")
+    expected_username = getattr(cfg, "admin_username", "admin")
+    expected_password = getattr(cfg, "admin_password", "change_me")
 
-    if req.password != expected:
-        raise HTTPException(status_code=401, detail="Invalid password")
+    if req.username != expected_username or req.password != expected_password:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    set_admin_cookie(response)
+    set_session_cookie(
+        response,
+        {
+            "display_name": expected_username,
+            "role": "admin",
+            "card_id": None,
+        },
+    )
+    if is_connected():
+        try:
+            write_user_name("Admin")
+        except Exception as e:
+            print("Failed writing UserName on admin login:", e)
     return {"ok": True}
 
+@app.post("/api/logout")
+def logout(response: Response):
+    clear_session_cookie(response)
+    return {"ok": True}
 
-@app.post("/api/admin/logout")
-def admin_logout(response: Response):
-    clear_admin_cookie(response)
+@app.get("/api/session")
+def session_status(request: Request, response: Response):
+    session = get_session(request)
+    if not session:
+        return {"authenticated": False, "user": None}
+
+    set_session_cookie(response, session)
+    return {"authenticated": True, "user": session}
+
+
+@app.post("/api/login/rfid")
+def login_rfid(req: RFIDLoginRequest, response: Response):
+    card_id = str(req.card_id).strip()
+    if not card_id:
+        raise HTTPException(status_code=400, detail="Card ID is required")
+
+    user = _find_user_by_card(card_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="Card not recognized")
+
+    session_payload = {
+        "user_id": user.get("id"),
+        "display_name": user.get("display_name"),
+        "role": user.get("role"),
+        "card_id": user.get("card_id"),
+    }
+    set_session_cookie(response, session_payload)
+    if is_connected():
+        try:
+            write_user_name(str(user.get("display_name") or ""))
+        except Exception as e:
+            print("Failed writing UserName on RFID login:", e)
+    return {"ok": True, "user": session_payload}
+
+
+@app.get("/api/users", dependencies=[Depends(supervisor_or_admin_dep)])
+def get_users():
+    users = [_sanitize_user(user) for user in _load_users()]
+    users.sort(key=lambda u: str(u.get("display_name", "")).lower())
+    return users
+
+
+@app.post("/api/users", dependencies=[Depends(supervisor_or_admin_dep)])
+def create_user(req: UserUpsertRequest, request: Request):
+    display_name = str(req.display_name).strip()
+    role = str(req.role).strip().lower()
+    card_id = str(req.card_id).strip()
+
+    if not display_name:
+        raise HTTPException(status_code=400, detail="Display name is required")
+    if role not in {"supervisor", "operator"}:
+        raise HTTPException(status_code=400, detail="Role must be supervisor or operator")
+    if not card_id:
+        raise HTTPException(status_code=400, detail="Card ID is required")
+
+    users = _load_users()
+    for user in users:
+        if str(user.get("card_id", "")).strip() == card_id:
+            raise HTTPException(status_code=409, detail="Card already assigned")
+
+    new_user = {
+        "id": _next_user_id(users),
+        "display_name": display_name,
+        "role": role,
+        "card_id": card_id,
+        "created_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+        "created_by": _current_user_name(request),
+    }
+    users.append(new_user)
+    _save_users(users)
+    return _sanitize_user(new_user)
+
+
+@app.delete("/api/users/{user_id}", dependencies=[Depends(supervisor_or_admin_dep)])
+def delete_user(user_id: int, request: Request):
+    current_session = get_session(request) or {}
+    current_user_id = current_session.get("user_id")
+
+    if current_user_id == user_id:
+        raise HTTPException(status_code=400, detail="Cannot delete your own user")
+    users = _load_users()
+    filtered = [u for u in users if int(u.get("id", -1)) != user_id]
+    if len(filtered) == len(users):
+        raise HTTPException(status_code=404, detail="User not found")
+    _save_users(filtered)
     return {"ok": True}
 
 
@@ -187,28 +322,30 @@ def set_config(req: ConfigUpdateRequest) -> ConfigResponse:
     return ConfigResponse(parts_root=cfg.parts_root)
 
 
-@app.get("/api/parts")
+@app.get("/api/parts", dependencies=[Depends(any_user_dep)])
 def get_parts():
     return scan_parts()
 
 
-@app.get("/api/parts/{part_id}")
+@app.get("/api/parts/{part_id}", dependencies=[Depends(any_user_dep)])
 def part_detail(part_id: str):
     return get_part(part_id)
 
-
-@app.post("/api/apply")
+@app.post("/api/apply", dependencies=[Depends(any_user_dep)])
 def apply(req: ApplyRequest):
     if not is_connected():
         raise HTTPException(status_code=500, detail="OPC UA not connected")
 
     write_zones(req.part_id, req.zones)
+    zone_ids = [i for i in range(1, 41) if req.zones.get(i) or req.zones.get(str(i))]
+    write_zone_list(zone_ids)
+    write_recipe_name("")
     log_apply(req.part_id, req.zones)
 
     return {"status": "ok"}
 
 
-@app.post("/api/opc/write-paths")
+@app.post("/api/opc/write-paths", dependencies=[Depends(any_user_dep)])
 def write_paths_endpoint(req: WritePathsRequest):
     from app.opc_service import write_paths
 
@@ -216,7 +353,20 @@ def write_paths_endpoint(req: WritePathsRequest):
         raise HTTPException(status_code=500, detail="OPC UA not connected")
 
     write_paths(req.paths)
+    write_recipe_name("")
 
+    return {"status": "ok"}
+
+@app.post("/api/opc/select-part", dependencies=[Depends(any_user_dep)])
+def select_part_endpoint(req: SelectPartRequest):
+    if not is_connected():
+        raise HTTPException(status_code=500, detail="OPC UA not connected")
+
+    selected_display_name = str(req.display_name or "").strip()
+    if not selected_display_name:
+        raise HTTPException(status_code=400, detail="display_name is required")
+
+    write_part_name(selected_display_name)
     return {"status": "ok"}
 
 
@@ -332,6 +482,53 @@ def _valid_zone_ids_for_orientation(part_id: str, orientation: Optional[int]) ->
                 valid_ids.add(zone["zone_id"])
 
     return valid_ids
+
+def _load_users() -> list[dict[str, Any]]:
+    try:
+        data = json.loads(USERS_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_users(users: list[dict[str, Any]]) -> None:
+    USERS_FILE.write_text(json.dumps(users, indent=2), encoding="utf-8")
+
+
+def _next_user_id(users: list[dict[str, Any]]) -> int:
+    ids = [int(u.get("id", 0)) for u in users if isinstance(u, dict)]
+    return max(ids, default=0) + 1
+
+
+def _sanitize_user(user: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": user.get("id"),
+        "display_name": user.get("display_name", ""),
+        "role": user.get("role", "operator"),
+        "card_id": user.get("card_id", ""),
+        "created_at": user.get("created_at"),
+    }
+
+
+def _find_user_by_card(card_id: str) -> Optional[dict[str, Any]]:
+    normalized = str(card_id).strip()
+    if not normalized:
+        return None
+
+    for user in _load_users():
+        if str(user.get("card_id", "")).strip() == normalized:
+            return user
+    return None
+
+
+def _current_user_name(request: Request) -> str:
+    session = get_session(request) or {}
+    return str(session.get("display_name") or "Unknown")
+
+
+def _current_user_role(request: Request) -> str:
+    session = get_session(request) or {}
+    return str(session.get("role") or "operator")
 
 
 # Helper to compare recipe IDs safely
@@ -550,12 +747,12 @@ def editor_import_overlay(part_id: str, section_index: int):
         raise HTTPException(status_code=500, detail=f"Import failed: {e}")
 
 
-@app.get("/api/recipes/{part_id}")
+@app.get("/api/recipes/{part_id}", dependencies=[Depends(any_user_dep)])
 def get_recipes(part_id: str):
     return _load_recipe_list(part_id)
 
 
-@app.get("/api/parts/{part_id}/last-state")
+@app.get("/api/parts/{part_id}/last-state", dependencies=[Depends(any_user_dep)])
 def get_last_state(part_id: str):
     state = _load_last_state(part_id)
     return state or {
@@ -567,7 +764,7 @@ def get_last_state(part_id: str):
     }
 
 
-@app.post("/api/parts/{part_id}/last-state")
+@app.post("/api/parts/{part_id}/last-state", dependencies=[Depends(any_user_dep)])
 def save_last_state(part_id: str, req: SaveLastStateRequest):
     incoming_saved_at = int(req.saved_at or 0)
     existing = _load_last_state(part_id) or {}
@@ -587,8 +784,8 @@ def save_last_state(part_id: str, req: SaveLastStateRequest):
     _save_last_state(part_id, payload)
     return {"ok": True}
 
-@app.post("/api/recipes/{part_id}/save")
-def save_recipe(part_id: str, req: SaveRecipeRequest):
+@app.post("/api/recipes/{part_id}/save", dependencies=[Depends(any_user_dep)])
+def save_recipe(part_id: str, req: SaveRecipeRequest, request: Request):
     existing = _load_recipe_list(part_id)
 
     next_id = max(
@@ -602,6 +799,9 @@ def save_recipe(part_id: str, req: SaveRecipeRequest):
         "description": req.description,
         "paths": req.paths,
         "zones": req.zones,
+        "created_by": _current_user_name(request),
+        "created_by_role": _current_user_role(request),
+        "created_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
     }
 
     existing.append(new_recipe)
@@ -610,7 +810,7 @@ def save_recipe(part_id: str, req: SaveRecipeRequest):
     return {"ok": True, "recipe": new_recipe}
 
 
-@app.post("/api/recipes/{part_id}/load")
+@app.post("/api/recipes/{part_id}/load", dependencies=[Depends(any_user_dep)])
 def load_recipe(part_id: str, req: LoadRecipeRequest):
     recipes = _load_recipe_list(part_id)
 
@@ -646,6 +846,9 @@ def load_recipe(part_id: str, req: LoadRecipeRequest):
 
     write_paths(recipe.get("paths", []))
     write_zones(part_id, recipe.get("zones", {}))
+    zone_ids = _zone_ids_from_zone_map(recipe.get("zones", {}))
+    write_zone_list(zone_ids)
+    write_recipe_name(str(recipe.get("name") or ""))
 
     return recipe
 
@@ -682,7 +885,7 @@ def delete_recipe(part_id: str, recipe_id: int):
     return {"ok": True}
 
 
-@app.get("/api/opc/force")
+@app.get("/api/opc/force", dependencies=[Depends(any_user_dep)])
 def opc_force():
     from app.opc_service import get_force_reading
 
@@ -691,7 +894,7 @@ def opc_force():
     return {"value": value}
 
 
-@app.get("/api/opc/paths")
+@app.get("/api/opc/paths", dependencies=[Depends(any_user_dep)])
 def opc_paths():
     return {"paths": get_paths()}
 
@@ -701,7 +904,7 @@ def health():
     return {"ok": True}
 
 
-@app.get("/api/opc/status")
+@app.get("/api/opc/status", dependencies=[Depends(any_user_dep)])
 def opc_status():
     orientation = get_table_orientation()
     orientation_degrees = get_table_orientation_degrees()

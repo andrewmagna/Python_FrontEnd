@@ -87,7 +87,7 @@ export default function AdminRecipes() {
 
   const returnTarget = searchParams.get("return") || "grid";
 
-  const [admin, setAdmin] = useState(false);
+  const [authorized, setAuthorized] = useState(false);
   const [loading, setLoading] = useState(true);
   const [recipes, setRecipes] = useState([]);
   const [busyId, setBusyId] = useState(null);
@@ -100,16 +100,21 @@ export default function AdminRecipes() {
   async function loadRecipesPage() {
     setLoading(true);
 
-    const statusRes = await fetch("/api/admin/status");
+    const statusRes = await fetch("/api/session");
     const statusData = await statusRes.json();
 
-    if (!statusData.admin) {
-      const next = encodeURIComponent(`/admin/recipes/${partId}?return=${returnTarget}`);
-      navigate(`/admin/login?next=${next}`);
+    if (!statusData.authenticated) {
+      navigate("/login", { replace: true });
       return;
     }
 
-    setAdmin(true);
+    const role = statusData.user?.role;
+    if (role !== "admin" && role !== "supervisor") {
+      navigate("/", { replace: true });
+      return;
+    }
+
+    setAuthorized(true);
 
     const res = await fetch(`/api/recipes/${partId}`);
     const data = res.ok ? await res.json() : [];
@@ -250,7 +255,7 @@ export default function AdminRecipes() {
     }));
   }, [recipes]);
 
-  if (!admin || loading) {
+  if (!authorized || loading) {
     return <div style={{ padding: 20 }}>Loading recipes...</div>;
   }
 
@@ -293,26 +298,27 @@ export default function AdminRecipes() {
           overflow: "auto",
         }}
       >
-        <div style={{ minWidth: 1220 }}>
+        <div style={{ minWidth: 1380 }}>
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "180px 220px 420px 260px 140px",
+              gridTemplateColumns: "180px 220px 170px 420px 250px 140px",
               borderBottom: "1px solid #e5e7eb",
-              background: "#f9fafb",
-              fontWeight: 700,
-              fontSize: 13,
+              alignItems: "start",
             }}
           >
             <div style={{ padding: 12 }}>Name</div>
             <div style={{ padding: 12 }}>Description</div>
+            <div style={{ padding: 12 }}>Created By</div>
             <div style={{ padding: 12 }}>Paths</div>
             <div style={{ padding: 12 }}>Zones</div>
             <div style={{ padding: 12 }}>Actions</div>
           </div>
 
           {recipeRows.length === 0 ? (
-            <div style={{ padding: 16, color: "#6b7280" }}>No recipes found</div>
+            <div style={{ padding: 16, color: "#6b7280" }}>
+              No recipes found
+            </div>
           ) : (
             recipeRows.map((recipe) => {
               const isEditing = editingId === recipe.id;
@@ -322,7 +328,7 @@ export default function AdminRecipes() {
                   key={recipe.id}
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "180px 220px 420px 260px 140px",
+                    gridTemplateColumns: "180px 220px 170px 420px 250px 140px",
                     borderBottom: "1px solid #e5e7eb",
                     alignItems: "start",
                   }}
@@ -333,7 +339,11 @@ export default function AdminRecipes() {
                         type="text"
                         value={editName}
                         onChange={(e) => setEditName(e.target.value)}
-                        style={{ width: "100%", padding: 8, boxSizing: "border-box" }}
+                        style={{
+                          width: "100%",
+                          padding: 8,
+                          boxSizing: "border-box",
+                        }}
                       />
                     ) : (
                       <div style={{ fontWeight: 600 }}>{recipe.name}</div>
@@ -346,13 +356,34 @@ export default function AdminRecipes() {
                         value={editDescription}
                         onChange={(e) => setEditDescription(e.target.value)}
                         rows={3}
-                        style={{ width: "100%", padding: 8, boxSizing: "border-box", resize: "vertical", fontFamily: "Arial, sans-serif" }}
+                        style={{
+                          width: "100%",
+                          padding: 8,
+                          boxSizing: "border-box",
+                          resize: "vertical",
+                          fontFamily: "Arial, sans-serif",
+                        }}
                       />
                     ) : (
-                      <div style={{ whiteSpace: "pre-wrap", color: recipe.description ? "#1f2937" : "#6b7280" }}>
+                      <div
+                        style={{
+                          whiteSpace: "pre-wrap",
+                          color: recipe.description ? "#1f2937" : "#6b7280",
+                        }}
+                      >
                         {recipe.description || "No description"}
                       </div>
                     )}
+                  </div>
+
+                  <div
+                    style={{
+                      padding: 12,
+                      color: recipe.created_by ? "#1f2937" : "#6b7280",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {recipe.created_by || "Unknown"}
                   </div>
 
                   <div style={{ padding: 12 }}>
@@ -368,18 +399,32 @@ export default function AdminRecipes() {
                               flexWrap: "wrap",
                             }}
                           >
-                            <strong style={{ minWidth: 24 }}>P{index + 1}</strong>
+                            <strong style={{ minWidth: 24 }}>
+                              P{index + 1}
+                            </strong>
                             <input
                               type="number"
                               min="0"
                               value={path.passes}
-                              onChange={(e) => updateEditPath(index, "passes", Number(e.target.value))}
+                              onChange={(e) =>
+                                updateEditPath(
+                                  index,
+                                  "passes",
+                                  Number(e.target.value),
+                                )
+                              }
                               style={{ width: 64, padding: 6 }}
                             />
                             {index < 3 ? (
                               <select
                                 value={path.grit}
-                                onChange={(e) => updateEditPath(index, "grit", Number(e.target.value))}
+                                onChange={(e) =>
+                                  updateEditPath(
+                                    index,
+                                    "grit",
+                                    Number(e.target.value),
+                                  )
+                                }
                                 style={{ width: 90, padding: 6 }}
                               >
                                 <option value={80}>80 grit</option>
@@ -387,7 +432,9 @@ export default function AdminRecipes() {
                                 <option value={180}>180 grit</option>
                               </select>
                             ) : (
-                              <div style={{ minWidth: 90, color: "#4b5563" }}>Scotchbrite</div>
+                              <div style={{ minWidth: 90, color: "#4b5563" }}>
+                                Scotchbrite
+                              </div>
                             )}
                             <input
                               type="number"
@@ -395,7 +442,13 @@ export default function AdminRecipes() {
                               max="20"
                               step="0.1"
                               value={path.force}
-                              onChange={(e) => updateEditPath(index, "force", Number(e.target.value))}
+                              onChange={(e) =>
+                                updateEditPath(
+                                  index,
+                                  "force",
+                                  Number(e.target.value),
+                                )
+                              }
                               style={{ width: 64, padding: 6 }}
                             />
                           </div>
@@ -418,11 +471,19 @@ export default function AdminRecipes() {
                         value={editZones.join(", ")}
                         onChange={(e) => updateEditZones(e.target.value)}
                         rows={3}
-                        style={{ width: "100%", padding: 8, boxSizing: "border-box", resize: "vertical", fontFamily: "Arial, sans-serif" }}
+                        style={{
+                          width: "100%",
+                          padding: 8,
+                          boxSizing: "border-box",
+                          resize: "vertical",
+                          fontFamily: "Arial, sans-serif",
+                        }}
                       />
                     ) : (
                       <div style={{ fontSize: 13, whiteSpace: "pre-wrap" }}>
-                        {recipe.normalizedZones.length > 0 ? recipe.normalizedZones.join(", ") : "No zones"}
+                        {recipe.normalizedZones.length > 0
+                          ? recipe.normalizedZones.join(", ")
+                          : "No zones"}
                       </div>
                     )}
                   </div>

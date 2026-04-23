@@ -1,15 +1,89 @@
-import { Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import PartsGrid from "./pages/PartsGrid.jsx";
 import PartPage from "./pages/PartPage.jsx";
 import AdminLogin from "./pages/AdminLogin.jsx";
 import AdminEditor from "./pages/AdminEditor.jsx";
 import AppHeader from "./components/AppHeader.jsx";
 import AdminRecipes from "./pages/AdminRecipes.jsx";
+import AdminUsers from "./pages/AdminUsers.jsx";
+
+function ProtectedRoute({ session, children }) {
+  if (!session?.authenticated) {
+    return <Navigate to="/login" replace />;
+  }
+  return children;
+}
 
 export default function App() {
   const location = useLocation();
-  const state = location.state;
-  const backgroundLocation = state?.backgroundLocation;
+  const navigate = useNavigate();
+  const [session, setSession] = useState({ loading: true, authenticated: false, user: null });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSession() {
+      try {
+        const res = await fetch("/api/session");
+        const data = await res.json();
+        if (!cancelled) {
+          setSession({
+            loading: false,
+            authenticated: !!data.authenticated,
+            user: data.user || null,
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setSession({ loading: false, authenticated: false, user: null });
+        }
+      }
+    }
+
+    loadSession();
+    return () => {
+      cancelled = true;
+    };
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!session.authenticated) return;
+
+    let timeoutId;
+    const timeoutMs = 15 * 60 * 1000;
+
+    async function forceLogout() {
+      try {
+        await fetch("/api/logout", { method: "POST" });
+      } catch {}
+      setSession({ loading: false, authenticated: false, user: null });
+      navigate("/login", { replace: true });
+    }
+
+    function resetTimer() {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(forceLogout, timeoutMs);
+    }
+
+    resetTimer();
+
+    const events = ["mousemove", "mousedown", "keydown", "touchstart"];
+    for (const eventName of events) {
+      window.addEventListener(eventName, resetTimer);
+    }
+
+    return () => {
+      clearTimeout(timeoutId);
+      for (const eventName of events) {
+        window.removeEventListener(eventName, resetTimer);
+      }
+    };
+  }, [session.authenticated, location.pathname, navigate]);
+
+  if (session.loading) {
+    return null;
+  }
 
   return (
     <>
@@ -28,25 +102,57 @@ export default function App() {
             boxSizing: "border-box",
           }}
         >
-          <Routes location={backgroundLocation || location}>
-            <Route path="/" element={<PartsGrid />} />
-            <Route path="/part/:partId" element={<PartPage />} />
+          <Routes>
+            <Route
+              path="/login"
+              element={
+                session.authenticated ? <Navigate to="/" replace /> : <AdminLogin />
+              }
+            />
+            <Route
+              path="/"
+              element={
+                <ProtectedRoute session={session}>
+                  <PartsGrid />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/part/:partId"
+              element={
+                <ProtectedRoute session={session}>
+                  <PartPage />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/admin/editor/:partId/:sectionIndex"
-              element={<AdminEditor />}
+              element={
+                <ProtectedRoute session={session}>
+                  <AdminEditor />
+                </ProtectedRoute>
+              }
             />
-            <Route path="/admin/recipes/:partId" element={<AdminRecipes />} />
-            <Route path="/admin/login" element={<AdminLogin />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route
+              path="/admin/recipes/:partId"
+              element={
+                <ProtectedRoute session={session}>
+                  <AdminRecipes />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/users"
+              element={
+                <ProtectedRoute session={session}>
+                  <AdminUsers />
+                </ProtectedRoute>
+              }
+            />
+            <Route path="*" element={<Navigate to={session.authenticated ? "/" : "/login"} replace />} />
           </Routes>
         </div>
       </div>
-
-      {backgroundLocation && (
-        <Routes>
-          <Route path="/admin/login" element={<AdminLogin />} />
-        </Routes>
-      )}
     </>
   );
 }

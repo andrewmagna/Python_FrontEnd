@@ -41,7 +41,10 @@ def config_path() -> Path:
 @dataclass
 class AppConfig:
     parts_root: str
+    admin_username: str = "admin"
     admin_password: str = "admin123"
+    secret_key: str = "dev_secret_change_me"
+    inactivity_timeout_minutes: int = 15
 
     @staticmethod
     def default() -> "AppConfig":
@@ -56,7 +59,17 @@ def load_config() -> AppConfig:
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
         parts_root = str(data.get("parts_root") or default_parts_root())
-        return AppConfig(parts_root=parts_root)
+        admin_username = str(data.get("admin_username") or "admin")
+        admin_password = str(data.get("admin_password") or "admin123")
+        secret_key = str(data.get("secret_key") or "dev_secret_change_me")
+        inactivity_timeout_minutes = int(data.get("inactivity_timeout_minutes") or 15)
+        return AppConfig(
+            parts_root=parts_root,
+            admin_username=admin_username,
+            admin_password=admin_password,
+            secret_key=secret_key,
+            inactivity_timeout_minutes=inactivity_timeout_minutes,
+        )
     except Exception:
         # Corrupt config, fall back to default instead of bricking the app
         return AppConfig.default()
@@ -66,7 +79,13 @@ def save_config(cfg: AppConfig) -> None:
     d = app_data_dir()
     d.mkdir(parents=True, exist_ok=True)
     p = config_path()
-    payload = {"parts_root": cfg.parts_root}
+    payload = {
+        "parts_root": cfg.parts_root,
+        "admin_username": cfg.admin_username,
+        "admin_password": cfg.admin_password,
+        "secret_key": cfg.secret_key,
+        "inactivity_timeout_minutes": cfg.inactivity_timeout_minutes,
+    }
     p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 

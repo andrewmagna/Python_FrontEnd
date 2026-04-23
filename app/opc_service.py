@@ -13,6 +13,12 @@ connected = False
 _objects_node = None
 _orientation_node = None
 _part_name_node = None
+_user_name_node = None
+_recipe_name_node = None
+_zone_list_node = None
+_shift_start_time_node = None
+_shift_end_time_node = None
+_shift_completed_node = None
 _force_reading_node = None
 _path_pass_nodes = {}
 _path_grit_nodes = {}
@@ -26,7 +32,7 @@ _index_lock = threading.Lock()
 
 
 def connect():
-    global client, connected, _objects_node, _orientation_node, _part_name_node, _force_reading_node, _path_pass_nodes, _path_grit_nodes, _path_force_nodes, _zone_command_nodes, _logged_missing_nodes, _browse_name_index, _index_built
+    global client, connected, _objects_node, _orientation_node, _part_name_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _force_reading_node, _path_pass_nodes, _path_grit_nodes, _path_force_nodes, _zone_command_nodes, _logged_missing_nodes, _browse_name_index, _index_built
 
     load_config()
 
@@ -35,6 +41,12 @@ def connect():
     _objects_node = None
     _orientation_node = None
     _part_name_node = None
+    _user_name_node = None
+    _recipe_name_node = None
+    _zone_list_node = None
+    _shift_start_time_node = None
+    _shift_end_time_node = None
+    _shift_completed_node = None
     _force_reading_node = None
     _path_pass_nodes = {}
     _path_grit_nodes = {}
@@ -64,6 +76,12 @@ def connect():
         _objects_node = None
         _orientation_node = None
         _part_name_node = None
+        _user_name_node = None
+        _recipe_name_node = None
+        _zone_list_node = None
+        _shift_start_time_node = None
+        _shift_end_time_node = None
+        _shift_completed_node = None
         _force_reading_node = None
         _path_pass_nodes = {}
         _path_grit_nodes = {}
@@ -173,7 +191,7 @@ def _default_paths():
 
 
 def _get_cached_node(cache_name: str, target_name: str):
-    global _orientation_node, _part_name_node, _force_reading_node
+    global _orientation_node, _part_name_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _force_reading_node
 
     _require_connection()
 
@@ -182,6 +200,24 @@ def _get_cached_node(cache_name: str, target_name: str):
 
     if cache_name == "part_name" and _part_name_node is not None:
         return _part_name_node
+
+    if cache_name == "user_name" and _user_name_node is not None:
+        return _user_name_node
+
+    if cache_name == "recipe_name" and _recipe_name_node is not None:
+        return _recipe_name_node
+    
+    if cache_name == "zone_list" and _zone_list_node is not None:
+        return _zone_list_node
+
+    if cache_name == "shift_start_time" and _shift_start_time_node is not None:
+        return _shift_start_time_node
+
+    if cache_name == "shift_end_time" and _shift_end_time_node is not None:
+        return _shift_end_time_node
+
+    if cache_name == "shift_completed" and _shift_completed_node is not None:
+        return _shift_completed_node
 
     if cache_name == "force_reading" and _force_reading_node is not None:
         return _force_reading_node
@@ -196,6 +232,18 @@ def _get_cached_node(cache_name: str, target_name: str):
         _orientation_node = node
     elif cache_name == "part_name":
         _part_name_node = node
+    elif cache_name == "user_name":
+        _user_name_node = node
+    elif cache_name == "recipe_name":
+        _recipe_name_node = node
+    elif cache_name == "zone_list":
+        _zone_list_node = node
+    elif cache_name == "shift_start_time":
+        _shift_start_time_node = node
+    elif cache_name == "shift_end_time":
+        _shift_end_time_node = node
+    elif cache_name == "shift_completed":
+        _shift_completed_node = node
     elif cache_name == "force_reading":
         _force_reading_node = node
 
@@ -510,3 +558,80 @@ def write_paths(paths):
 
             if grit_node is not None:
                 _set_node_value(grit_node, grit_value, grit_node_name)
+                
+def write_user_name(user_name: str):
+    _require_connection()
+
+    user_node = _get_cached_node("user_name", "UserName")
+    if user_node is None:
+        print("Skipping missing OPC node: UserName")
+        return
+
+    _set_node_value(user_node, str(user_name), "UserName")
+    
+def write_part_name(part_id: str):
+    _require_connection()
+
+    part_node = _get_cached_node("part_name", "part_name")
+    if part_node is None:
+        print("Skipping missing OPC node: part_name")
+        return
+
+    _set_node_value(part_node, str(part_id), "part_name")
+
+def write_recipe_name(recipe_name: str):
+    _require_connection()
+
+    recipe_node = _get_cached_node("recipe_name", "Recipe_Name")
+    if recipe_node is None:
+        print("Skipping missing OPC node: Recipe_Name")
+        return
+
+    _set_node_value(recipe_node, str(recipe_name), "Recipe_Name")
+    
+def write_zone_list(zone_ids: list[int]):
+    _require_connection()
+
+    zone_list_node = _get_cached_node("zone_list", "Zone_List")
+    if zone_list_node is None:
+        print("Skipping missing OPC node: Zone_List")
+        return
+
+    if not zone_ids:
+        zone_list_value = ""
+    else:
+        zone_list_value = ",".join(str(i) for i in sorted(zone_ids))
+
+    _set_node_value(zone_list_node, zone_list_value, "Zone_List")
+    
+def write_shift_start_time(value: str):
+    _require_connection()
+
+    node = _get_cached_node("shift_start_time", "Shift_Start_Time")
+    if node is None:
+        print("Skipping missing OPC node: Shift_Start_Time")
+        return
+
+    _set_node_value(node, str(value), "Shift_Start_Time")
+
+
+def write_shift_end_time(value: str):
+    _require_connection()
+
+    node = _get_cached_node("shift_end_time", "Shift_End_Time")
+    if node is None:
+        print("Skipping missing OPC node: Shift_End_Time")
+        return
+
+    _set_node_value(node, str(value), "Shift_End_Time")
+
+
+def write_shift_completed(value: int):
+    _require_connection()
+
+    node = _get_cached_node("shift_completed", "Shift_Completed")
+    if node is None:
+        print("Skipping missing OPC node: Shift_Completed")
+        return
+
+    _set_node_value(node, int(value), "Shift_Completed")

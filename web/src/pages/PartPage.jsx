@@ -33,6 +33,8 @@ export default function PartPage() {
   const [debugOrientationOverride, setDebugOrientationOverride] =
     useState("live");
   const [isNarrow, setIsNarrow] = useState(false);
+  const [sessionUser, setSessionUser] = useState(null);
+
 
   const [forceReading, setForceReading] = useState(null);
 
@@ -193,6 +195,30 @@ export default function PartPage() {
   useEffect(() => {
     refreshRecipes();
   }, [partId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSession() {
+      try {
+        const res = await fetch("/api/session");
+        const data = await res.json();
+
+        if (!cancelled) {
+          setSessionUser(data.authenticated ? data.user : null);
+        }
+      } catch {
+        if (!cancelled) {
+          setSessionUser(null);
+        }
+      }
+    }
+
+    loadSession();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
 
   useEffect(() => {
@@ -768,6 +794,10 @@ export default function PartPage() {
     }
   }
 
+  const currentRole = sessionUser?.role || null;
+  const canSeeDebug = currentRole === "admin";
+  const canSeeAdmin = currentRole === "admin" || currentRole === "supervisor";
+
   if (!part) {
     return <div style={{ padding: 16 }}>Loading...</div>;
   }
@@ -876,24 +906,36 @@ export default function PartPage() {
               )}
             </div>
 
-            <button
-              onClick={() => {
-                window.location.href = `/admin/editor/${part.part_id}/${firstEditableSection}?return=part`;
-              }}
-              style={{
-                padding: "12px 18px",
-                border: "1px solid #2563eb",
-                borderRadius: 12,
-                background: "#2563eb",
-                color: "#ffffff",
-                fontSize: 14,
-                fontWeight: 700,
-                cursor: "pointer",
-                minWidth: 190,
-              }}
-            >
-              Open Zone Editor
-            </button>
+            {canSeeAdmin ? (
+              <button
+                onClick={() => {
+                  window.location.href = `/admin/editor/${part.part_id}/${firstEditableSection}?return=part`;
+                }}
+                style={{
+                  padding: "12px 18px",
+                  border: "1px solid #2563eb",
+                  borderRadius: 12,
+                  background: "#2563eb",
+                  color: "#ffffff",
+                  fontSize: 14,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  minWidth: 190,
+                }}
+              >
+                Open Zone Editor
+              </button>
+            ) : (
+              <div
+                style={{
+                  fontSize: 13,
+                  color: "#6b7280",
+                  fontWeight: 600,
+                }}
+              >
+                Contact a supervisor or admin to configure zones for this part.
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1322,72 +1364,85 @@ export default function PartPage() {
             </div>
           </Card>
 
-          <Card title="Debug">
-            <div style={{ display: "grid", gap: 8 }}>
-              <label
-                style={{ fontSize: 13, fontWeight: 600, color: "#4b5563" }}
-              >
-                Orientation override
-              </label>
-              <select
-                value={debugOrientationOverride}
-                onChange={(e) => setDebugOrientationOverride(e.target.value)}
-                style={{
-                  padding: "10px 12px",
-                  border: "1px solid #d1d5db",
-                  borderRadius: 10,
-                  background: "#fff",
-                  fontSize: 14,
-                  width: "100%",
-                  boxSizing: "border-box",
-                }}
-              >
-                <option value="live">Live OPC</option>
-                <option value="1">0°</option>
-                <option value="2">90°</option>
-                <option value="3">180°</option>
-                <option value="4">270°</option>
-              </select>
-
-              {debugOrientationOverride !== "live" && (
-                <div
+          {canSeeDebug && (
+            <Card title="Debug">
+              <div style={{ display: "grid", gap: 8 }}>
+                <label
+                  style={{ fontSize: 13, fontWeight: 600, color: "#4b5563" }}
+                >
+                  Orientation override
+                </label>
+                <select
+                  value={debugOrientationOverride}
+                  onChange={(e) => setDebugOrientationOverride(e.target.value)}
                   style={{
-                    fontSize: 13,
-                    color: "#92400e",
-                    background: "#fef3c7",
-                    border: "1px solid #fcd34d",
+                    padding: "10px 12px",
+                    border: "1px solid #d1d5db",
                     borderRadius: 10,
-                    padding: "8px 10px",
-                    fontWeight: 600,
+                    background: "#fff",
+                    fontSize: 14,
+                    width: "100%",
+                    boxSizing: "border-box",
                   }}
                 >
-                  Debug override active
-                </div>
-              )}
-            </div>
-          </Card>
+                  <option value="live">Live OPC</option>
+                  <option value="1">0°</option>
+                  <option value="2">90°</option>
+                  <option value="3">180°</option>
+                  <option value="4">270°</option>
+                </select>
 
-          <Card title="Admin">
-            <div style={{ display: "grid", gap: 8 }}>
-              <button
-                onClick={() => {
-                  window.location.href = `/admin/editor/${part.part_id}/1?return=part`;
-                }}
-                style={buttonStyle()}
-              >
-                Edit Zones
-              </button>
+                {debugOrientationOverride !== "live" && (
+                  <div
+                    style={{
+                      fontSize: 13,
+                      color: "#92400e",
+                      background: "#fef3c7",
+                      border: "1px solid #fcd34d",
+                      borderRadius: 10,
+                      padding: "8px 10px",
+                      fontWeight: 600,
+                    }}
+                  >
+                    Debug override active
+                  </div>
+                )}
+              </div>
+            </Card>
+          )}
 
-              <button
-                onClick={() => {
-                  window.location.href = `/admin/recipes/${part.part_id}?return=part`;
-                }}
-                style={buttonStyle()}
-              >
-                Edit Recipes
-              </button>
-            </div>
-          </Card>
+          {canSeeAdmin && (
+            <Card title="Admin">
+              <div style={{ display: "grid", gap: 8 }}>
+                <button
+                  onClick={() => {
+                    window.location.href = `/admin/editor/${part.part_id}/1?return=part`;
+                  }}
+                  style={buttonStyle()}
+                >
+                  Edit Zones
+                </button>
+
+                <button
+                  onClick={() => {
+                    window.location.href = `/admin/recipes/${part.part_id}?return=part`;
+                  }}
+                  style={buttonStyle()}
+                >
+                  Edit Recipes
+                </button>
+
+                <button
+                  onClick={() => {
+                    window.location.href = `/admin/users?return=part`;
+                  }}
+                  style={buttonStyle()}
+                >
+                  Manage Users
+                </button>
+              </div>
+            </Card>
+          )}
         </div>
       </div>
 

@@ -3,47 +3,75 @@ import { useLocation, useNavigate } from "react-router-dom";
 import bannerImg from "../assets/banner.png";
 
 export default function AppHeader() {
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [session, setSession] = useState(null);
   const navigate = useNavigate();
   const location = useLocation();
 
   useEffect(() => {
     let cancelled = false;
 
-    async function checkAdmin() {
+    async function loadSession() {
       try {
-        const res = await fetch("/api/admin/status");
+        const res = await fetch("/api/session");
         const data = await res.json();
         if (!cancelled) {
-          setIsAdmin(!!data.admin);
+          setSession(data.authenticated ? data.user : null);
         }
       } catch {
         if (!cancelled) {
-          setIsAdmin(false);
+          setSession(null);
         }
       }
     }
 
-    checkAdmin();
+    loadSession();
     return () => {
       cancelled = true;
     };
   }, [location.pathname]);
 
-  async function handleAdminClick() {
-    if (isAdmin) {
-      try {
-        await fetch("/api/admin/logout", { method: "POST" });
-        setIsAdmin(false);
-      } catch {
-        alert("Logout failed");
-      }
-      return;
-    }
+  async function handleLogout() {
+    try {
+      await fetch("/api/logout", { method: "POST" });
+    } catch {}
+    setSession(null);
+    navigate("/login", { replace: true });
+  }
 
-    navigate("/admin/login?next=/", {
-      state: { backgroundLocation: location },
-    });
+  if (location.pathname === "/login") {
+    return (
+      <div
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          padding: "4px 16px 0",
+          background: "#f8fafc",
+        }}
+      >
+        <div
+          style={{
+            position: "relative",
+            minHeight: 52,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <img
+            src={bannerImg}
+            alt="MICA banner"
+            style={{
+              maxWidth: "min(520px, calc(100vw - 110px))",
+              maxHeight: 48,
+              width: "auto",
+              height: "auto",
+              display: "block",
+              objectFit: "contain",
+            }}
+          />
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -68,7 +96,7 @@ export default function AppHeader() {
           src={bannerImg}
           alt="MICA banner"
           style={{
-            maxWidth: "min(520px, calc(100vw - 110px))",
+            maxWidth: "min(520px, calc(100vw - 220px))",
             maxHeight: 48,
             width: "auto",
             height: "auto",
@@ -77,51 +105,90 @@ export default function AppHeader() {
           }}
         />
 
-        <button
-          onClick={handleAdminClick}
-          title={isAdmin ? "Admin logout" : "Admin login"}
-          aria-label={isAdmin ? "Admin logout" : "Admin login"}
+        <div
           style={{
             position: "absolute",
             right: 0,
             top: "50%",
             transform: "translateY(-50%)",
-            width: 40,
-            height: 40,
-            minWidth: 40,
-            minHeight: 40,
-            padding: 0,
-            borderRadius: 10,
-            border: "1px solid #e5e7eb",
-            background: isAdmin ? "#eff6ff" : "#ffffff",
             display: "flex",
             alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-            transition: "all 0.15s ease",
-            boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-            lineHeight: 1,
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.borderColor = "#93c5fd";
-            e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.08)";
-            e.currentTarget.style.transform =
-              "translateY(-50%) translateY(-1px)";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.borderColor = "#e5e7eb";
-            e.currentTarget.style.boxShadow = "0 1px 2px rgba(0,0,0,0.04)";
-            e.currentTarget.style.transform = "translateY(-50%)";
+            gap: 10,
           }}
         >
-          {isAdmin ? <LogoutIcon /> : <LoginIcon />}
-        </button>
+          {session && (session.role === "admin" || session.role === "supervisor") && (
+            <button
+              onClick={() => navigate("/admin/users?return=grid")}
+              title="Settings"
+              aria-label="Settings"
+              style={{
+                width: 40,
+                height: 40,
+                minWidth: 40,
+                minHeight: 40,
+                padding: 0,
+                borderRadius: 10,
+                border: "1px solid #e5e7eb",
+                background: "#ffffff",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                lineHeight: 1,
+              }}
+            >
+              <SettingsIcon />
+            </button>
+          )}
+          {session && (
+            <div
+              style={{
+                fontSize: 14,
+                fontWeight: 700,
+                color: "#1f2937",
+                background: "#ffffff",
+                border: "1px solid #e5e7eb",
+                borderRadius: 10,
+                padding: "8px 10px",
+              }}
+            >
+              {session.display_name}
+            </div>
+          )}
+
+          {session && (
+            <button
+              onClick={handleLogout}
+              title="Logout"
+              aria-label="Logout"
+              style={{
+                width: 40,
+                height: 40,
+                minWidth: 40,
+                minHeight: 40,
+                padding: 0,
+                borderRadius: 10,
+                border: "1px solid #e5e7eb",
+                background: "#ffffff",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                lineHeight: 1,
+              }}
+            >
+              <LogoutIcon />
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-function LoginIcon() {
+function SettingsIcon() {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
@@ -131,13 +198,19 @@ function LoginIcon() {
       aria-hidden="true"
       style={{ display: "block" }}
     >
-      <circle cx="12" cy="8" r="4" fill="#374151" />
       <path
-        d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6"
+        d="M12 8.75A3.25 3.25 0 1 0 12 15.25A3.25 3.25 0 1 0 12 8.75Z"
         fill="none"
-        stroke="#374151"
+        stroke="#2563eb"
         strokeWidth="2"
+      />
+      <path
+        d="M19.4 15a1 1 0 0 0 .2 1.1l.1.1a1 1 0 0 1 0 1.4l-1.2 1.2a1 1 0 0 1-1.4 0l-.1-.1a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.9V20a1 1 0 0 1-1 1h-1.7a1 1 0 0 1-1-1v-.2a1 1 0 0 0-.6-.9 1 1 0 0 0-1.1.2l-.1.1a1 1 0 0 1-1.4 0l-1.2-1.2a1 1 0 0 1 0-1.4l.1-.1a1 1 0 0 0 .2-1.1 1 1 0 0 0-.9-.6H4a1 1 0 0 1-1-1v-1.7a1 1 0 0 1 1-1h.2a1 1 0 0 0 .9-.6 1 1 0 0 0-.2-1.1l-.1-.1a1 1 0 0 1 0-1.4l1.2-1.2a1 1 0 0 1 1.4 0l.1.1a1 1 0 0 0 1.1.2 1 1 0 0 0 .6-.9V4a1 1 0 0 1 1-1h1.7a1 1 0 0 1 1 1v.2a1 1 0 0 0 .6.9 1 1 0 0 0 1.1-.2l.1-.1a1 1 0 0 1 1.4 0l1.2 1.2a1 1 0 0 1 0 1.4l-.1.1a1 1 0 0 0-.2 1.1 1 1 0 0 0 .9.6H20a1 1 0 0 1 1 1v1.7a1 1 0 0 1-1 1h-.2a1 1 0 0 0-.9.6Z"
+        fill="none"
+        stroke="#2563eb"
+        strokeWidth="1.7"
         strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );
