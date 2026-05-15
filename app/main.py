@@ -992,3 +992,9 @@ def serve_react_app(full_path: str):
         return FileResponse(requested_path)
 
     return FileResponse(WEB_INDEX)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=8000)
