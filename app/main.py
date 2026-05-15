@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import sys
+import threading
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 import cv2
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -32,6 +37,9 @@ from app.opc_service import (
     write_part_name,
     write_recipe_name,
     write_zone_list,
+    write_shift_start_time,
+    write_shift_end_time,
+    write_shift_completed,
 )
 from app.overlay_import import import_polygons_from_overlay
 from app.parts_service import get_part, scan_parts
@@ -49,6 +57,14 @@ app = FastAPI(title="ZoneSelect", lifespan=lifespan)
 cfg = load_config()
 parts_root = Path(cfg.parts_root)
 
+if getattr(sys, "frozen", False):
+    APP_ROOT = Path(sys._MEIPASS)
+else:
+    APP_ROOT = Path(__file__).resolve().parents[1]
+
+WEB_DIST = APP_ROOT / "web" / "dist"
+WEB_INDEX = WEB_DIST / "index.html"
+
 RECIPES_ROOT = Path("data/recipes")
 RECIPES_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -63,6 +79,9 @@ if not USERS_FILE.exists():
 
 if parts_root.exists():
     app.mount("/parts", StaticFiles(directory=parts_root), name="parts")
+
+if (WEB_DIST / "assets").exists():
+    app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
 
 
 class ConfigResponse(BaseModel):
@@ -80,6 +99,8 @@ class ApplyRequest(BaseModel):
 
 class WritePathsRequest(BaseModel):
     paths: list
+
+
 class SelectPartRequest(BaseModel):
     part_id: str
     display_name: str
@@ -187,7 +208,7 @@ def admin_status(request: Request):
         "user": session,
     }
 
-
+ 
 @app.post("/api/admin/login")
 def admin_login(req: AdminLoginRequest, response: Response):
     cfg = load_config()
@@ -210,10 +231,25 @@ def admin_login(req: AdminLoginRequest, response: Response):
             write_user_name("Admin")
         except Exception as e:
             print("Failed writing UserName on admin login:", e)
+
+    if is_connected():
+        try:
+            write_shift_start_time(_now_shift_timestamp())
+        except Exception as e:
+            print("Failed writing Shift_Start_Time on admin login:", e)
+
     return {"ok": True}
 
 @app.post("/api/logout")
 def logout(response: Response):
+    if is_connected():
+        try:
+            write_shift_end_time(_now_shift_timestamp())
+        except Exception as e:
+            print("Failed writing Shift_End_Time on logout:", e)
+
+        threading.Thread(target=_pulse_shift_completed_tag, daemon=True).start()
+
     clear_session_cookie(response)
     return {"ok": True}
 
@@ -249,6 +285,13 @@ def login_rfid(req: RFIDLoginRequest, response: Response):
             write_user_name(str(user.get("display_name") or ""))
         except Exception as e:
             print("Failed writing UserName on RFID login:", e)
+
+    if is_connected():
+        try:
+            write_shift_start_time(_now_shift_timestamp())
+        except Exception as e:
+            print("Failed writing Shift_Start_Time on RFID login:", e)
+
     return {"ok": True, "user": session_payload}
 
 
@@ -529,6 +572,23 @@ def _current_user_name(request: Request) -> str:
 def _current_user_role(request: Request) -> str:
     session = get_session(request) or {}
     return str(session.get("role") or "operator")
+
+
+def _now_shift_timestamp() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _pulse_shift_completed_tag() -> None:
+    if not is_connected():
+        return
+
+    try:
+        write_shift_completed(1)
+        time.sleep(10)
+        if is_connected():
+            write_shift_completed(0)
+    except Exception as e:
+        print("Failed pulsing Shift_Completed:", e)
 
 
 # Helper to compare recipe IDs safely
@@ -914,3 +974,21 @@ def opc_status():
         "table_orientation": orientation,
         "table_orientation_degrees": orientation_degrees,
     }
+
+
+# Serve React production build (catch-all)
+@app.get("/{full_path:path}")
+def serve_react_app(full_path: str):
+    if not WEB_INDEX.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="React build not found. Run `npm run build` inside the web folder first.",
+        )
+
+    requested_path = (WEB_DIST / full_path).resolve()
+    web_dist_root = WEB_DIST.resolve()
+
+    if requested_path.exists() and requested_path.is_file() and web_dist_root in requested_path.parents:
+        return FileResponse(requested_path)
+
+    return FileResponse(WEB_INDEX)

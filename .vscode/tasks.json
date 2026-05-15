@@ -1,0 +1,21 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "sqlproj: Build OEE",
+			"type": "process",
+			"command": "dotnet",
+			"args": [
+				"build",
+				"/Users/andrzaki/Dev/zone_select_app/OEE/OEE.sqlproj"
+			],
+			"problemMatcher": "$sqlproj-problem-matcher",
+			"isBackground": true,
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"detail": "Builds the OEE SQL project"
+		}
+	]
+}
