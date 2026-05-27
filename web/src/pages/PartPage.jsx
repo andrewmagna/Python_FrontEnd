@@ -135,7 +135,9 @@ export default function PartPage() {
 
     async function poll() {
       try {
-        const res = await fetch("/api/opc/status");
+        const res = await fetch(`/api/opc/status?t=${Date.now()}`, {
+          cache: "no-store",
+        });
         const data = await res.json();
 
         if (!cancelled) {
@@ -240,7 +242,9 @@ export default function PartPage() {
 
     async function pollProgram() {
       try {
-        const res = await fetch("/api/opc/program-status");
+        const res = await fetch(`/api/opc/program-status?t=${Date.now()}`, {
+          cache: "no-store",
+        });
         if (!res.ok || cancelled) return;
         const data = await res.json();
 
