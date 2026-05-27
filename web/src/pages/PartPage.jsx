@@ -57,6 +57,8 @@ export default function PartPage() {
   const hasLoadedLastStateRef = useRef(false);
   const isRestoringLastStateRef = useRef(false);
 
+  const [selectionMode, setSelectionMode] = useState("zone");
+
   const [programProgress, setProgramProgress] = useState({
     running: false,
     stepIndex: 0,
@@ -688,7 +690,9 @@ export default function PartPage() {
       }
 
       const nextPaths = normalizeRecipePaths(recipeData?.paths);
-      const nextZones = normalizeRecipeZones(recipeData?.zones);
+      const nextZones = selectionMode === "section"
+        ? (() => { const s = createEmptyZoneState(); for (const id of validZoneIds) s[id] = true; return s; })()
+        : normalizeRecipeZones(recipeData?.zones);
 
       setPaths(nextPaths);
       setZoneState(nextZones);
@@ -775,6 +779,21 @@ export default function PartPage() {
     });
   }, [validZoneIds]);
 
+  useEffect(() => {
+    if (selectionMode !== "section") return;
+    if (!hasLoadedLastStateRef.current) return;
+    if (validZoneIds.size === 0) return;
+
+    const nextState = createEmptyZoneState();
+    for (const zoneId of validZoneIds) {
+      nextState[zoneId] = true;
+    }
+    setZoneState(nextState);
+    if (opcConnected) {
+      pushZoneState(nextState);
+    }
+  }, [selectionMode, validZoneIds]); // opcConnected intentionally omitted — mode/orientation changes drive this
+
   function isZoneAvailable(zone) {
     if (![1, 2, 3, 4].includes(effectiveOrientation)) return false;
     return zone.orientation === effectiveOrientation;
@@ -782,6 +801,7 @@ export default function PartPage() {
 
   async function toggleZone(id) {
     if (!validZoneIds.has(id)) return;
+    if (selectionMode === "section") return;
 
     const previousState = zoneState;
     const nextState = {
@@ -835,6 +855,19 @@ export default function PartPage() {
       }),
     );
     await pushZoneState(nextState, () => setZoneState(previousState));
+  }
+
+  function handleModeToggle(newMode) {
+    if (newMode === selectionMode) return;
+    const emptyState = createEmptyZoneState();
+    setZoneState(emptyState);
+    setSelectedRecipeId(null);
+    setSelectionMode(newMode);
+    // Zone mode: push empty state to OPC now
+    // Section mode: useEffect will auto-select + push
+    if (newMode === "zone" && opcConnected) {
+      pushZoneState(emptyState);
+    }
   }
 
   async function pushZoneState(nextZoneState, onErrorRestore = null) {
@@ -1101,7 +1134,32 @@ export default function PartPage() {
           </Card>
 
           {/* RECIPE SETUP */}
-          <Card title="Recipe Setup">
+          <Card
+            title="Recipe Setup"
+            headerRight={
+              <div style={{ display: "flex", border: "1px solid #d1d5db", borderRadius: 8, overflow: "hidden" }}>
+                {["zone", "section"].map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => handleModeToggle(mode)}
+                    style={{
+                      padding: "3px 9px",
+                      border: "none",
+                      borderRight: mode === "zone" ? "1px solid #d1d5db" : "none",
+                      background: selectionMode === mode ? "#2563eb" : "#fff",
+                      color: selectionMode === mode ? "#fff" : "#6b7280",
+                      cursor: "pointer",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      textTransform: "capitalize",
+                    }}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+            }
+          >
             {paths.map((p, i) => (
               <div
                 key={i}
@@ -1378,6 +1436,7 @@ export default function PartPage() {
                     hoveredZone={hoveredZone}
                     setHoveredZone={setHoveredZone}
                     isZoneAvailable={isZoneAvailable}
+                    selectionMode={selectionMode}
                   />
                 </div>
               </div>
@@ -1424,31 +1483,39 @@ export default function PartPage() {
           <Card title="Zone Actions" style={{ flex: "0 0 auto" }}>
             <div style={{ display: "grid", gap: 10 }}>
               <button
-                onClick={clearAll}
-                disabled={!opcConnected || autoApplyBusy}
-                title={!opcConnected ? "OPC disconnected" : ""}
-                style={buttonStyle(!opcConnected || autoApplyBusy)}
-              >
-                Clear All
-              </button>
-
-              <button
                 onClick={selectAllAvailable}
                 disabled={
-                  validZoneIds.size === 0 || !opcConnected || autoApplyBusy
+                  validZoneIds.size === 0 || !opcConnected || autoApplyBusy || selectionMode === "section"
                 }
                 title={
                   !opcConnected
                     ? "OPC disconnected"
                     : validZoneIds.size === 0
                       ? "No zones available for current orientation"
-                      : ""
+                      : selectionMode === "section"
+                        ? "Switch to Zone mode to manually select"
+                        : ""
                 }
                 style={buttonStyle(
-                  validZoneIds.size === 0 || !opcConnected || autoApplyBusy,
+                  validZoneIds.size === 0 || !opcConnected || autoApplyBusy || selectionMode === "section",
                 )}
               >
                 Select All Available
+              </button>
+
+              <button
+                onClick={clearAll}
+                disabled={!opcConnected || autoApplyBusy || selectionMode === "section"}
+                title={
+                  !opcConnected
+                    ? "OPC disconnected"
+                    : selectionMode === "section"
+                      ? "Switch to Zone mode to clear"
+                      : ""
+                }
+                style={buttonStyle(!opcConnected || autoApplyBusy || selectionMode === "section")}
+              >
+                Clear All
               </button>
             </div>
           </Card>
@@ -1702,6 +1769,7 @@ function SectionViewer({
   hoveredZone,
   setHoveredZone,
   isZoneAvailable,
+  selectionMode,
 }) {
   const containerRef = useRef(null);
   const [fitSize, setFitSize] = useState({ width: 0, height: 0 });
@@ -1822,7 +1890,7 @@ function SectionViewer({
                 onMouseEnter={() => setHoveredZone(z.zone_id)}
                 onMouseLeave={() => setHoveredZone(null)}
                 style={{
-                  cursor: available ? "pointer" : "not-allowed",
+                  cursor: !available ? "not-allowed" : selectionMode === "section" ? "default" : "pointer",
                   transition: "fill 0.12s ease, stroke 0.12s ease",
                 }}
               />
@@ -1834,7 +1902,7 @@ function SectionViewer({
   );
 }
 
-function Card({ title, children, style: extraStyle }) {
+function Card({ title, children, style: extraStyle, headerRight }) {
   return (
     <div
       style={{
@@ -1849,13 +1917,16 @@ function Card({ title, children, style: extraStyle }) {
     >
       <div
         style={{
-          fontWeight: 700,
-          fontSize: 15,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
           marginBottom: 10,
-          color: "#111827",
         }}
       >
-        {title}
+        <div style={{ fontWeight: 700, fontSize: 15, color: "#111827" }}>
+          {title}
+        </div>
+        {headerRight}
       </div>
       {children}
     </div>

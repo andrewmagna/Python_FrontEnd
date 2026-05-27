@@ -23,6 +23,7 @@ _force_reading_node = None
 _program_started_node = None
 _cycle_started_node = None
 _cycle_completed_node = None
+_opc_status_node = None
 _path_pass_nodes = {}
 _path_grit_nodes = {}
 _path_force_nodes = {}
@@ -34,10 +35,35 @@ _index_built = False
 _index_lock = threading.Lock()
 
 
+def _write_opc_status(value: bool) -> None:
+    if _opc_status_node is not None and client is not None:
+        try:
+            _set_node_value(_opc_status_node, value, "OPC_Status")
+        except Exception:
+            pass
+
+
+def _post_connect_setup() -> None:
+    _ensure_browse_name_index()
+    if not is_connected():
+        return
+    try:
+        node = _get_cached_node("opc_status", "OPC_Status")
+        if node is None:
+            return
+        _set_node_value(node, True, "OPC_Status")
+    except Exception as e:
+        print(f"Failed writing OPC_Status=true: {e}")
+
+
 def connect():
-    global client, connected, _objects_node, _orientation_node, _part_name_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _force_reading_node, _path_pass_nodes, _path_grit_nodes, _path_force_nodes, _zone_command_nodes, _logged_missing_nodes, _browse_name_index, _index_built
+    global client, connected, _objects_node, _orientation_node, _part_name_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _force_reading_node, _opc_status_node, _path_pass_nodes, _path_grit_nodes, _path_force_nodes, _zone_command_nodes, _logged_missing_nodes, _browse_name_index, _index_built
 
     load_config()
+
+    # Write OPC_Status=false before dropping existing connection (only fires once per disconnect)
+    if connected and client is not None:
+        _write_opc_status(False)
 
     if client is not None:
         try:
@@ -60,6 +86,7 @@ def connect():
     _program_started_node = None
     _cycle_started_node = None
     _cycle_completed_node = None
+    _opc_status_node = None
     _path_pass_nodes = {}
     _path_grit_nodes = {}
     _path_force_nodes = {}
@@ -82,7 +109,7 @@ def connect():
         connected = True
         print("OPC connected")
 
-        threading.Thread(target=_ensure_browse_name_index, daemon=True).start()
+        threading.Thread(target=_post_connect_setup, daemon=True).start()
 
     except Exception as e:
         client = None
@@ -97,6 +124,7 @@ def connect():
         _shift_end_time_node = None
         _shift_completed_node = None
         _force_reading_node = None
+        _opc_status_node = None
         _path_pass_nodes = {}
         _path_grit_nodes = {}
         _path_force_nodes = {}
@@ -238,6 +266,9 @@ def _get_cached_node(cache_name: str, target_name: str):
     if cache_name == "cycle_completed" and _cycle_completed_node is not None:
         return _cycle_completed_node
 
+    if cache_name == "opc_status" and _opc_status_node is not None:
+        return _opc_status_node
+
     node = find_node_by_browse_name(_objects_node, target_name)
 
     if node is None:
@@ -268,6 +299,8 @@ def _get_cached_node(cache_name: str, target_name: str):
         _cycle_started_node = node
     elif cache_name == "cycle_completed":
         _cycle_completed_node = node
+    elif cache_name == "opc_status":
+        _opc_status_node = node
 
     return node
 
