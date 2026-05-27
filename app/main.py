@@ -58,22 +58,39 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="ZoneSelect", lifespan=lifespan)
 
 if getattr(sys, "frozen", False):
-    APP_ROOT = Path(sys._MEIPASS)
+    # Read-only bundled assets (web/dist) live in the temp extraction dir.
+    # Mutable data lives next to the .exe so it persists across runs.
+    _BUNDLE_ROOT = Path(sys._MEIPASS)
+    _DATA_ROOT = Path(sys.executable).parent
 else:
-    APP_ROOT = Path(__file__).resolve().parents[1]
+    _BUNDLE_ROOT = Path(__file__).resolve().parents[1]
+    _DATA_ROOT = Path(__file__).resolve().parents[1]
 
-WEB_DIST = APP_ROOT / "web" / "dist"
+WEB_DIST = _BUNDLE_ROOT / "web" / "dist"
 WEB_INDEX = WEB_DIST / "index.html"
 
-RECIPES_ROOT = APP_ROOT / "data" / "recipes"
+RECIPES_ROOT = _DATA_ROOT / "data" / "recipes"
 RECIPES_ROOT.mkdir(parents=True, exist_ok=True)
 
-LAST_STATE_ROOT = APP_ROOT / "data" / "last_state"
+LAST_STATE_ROOT = _DATA_ROOT / "data" / "last_state"
 LAST_STATE_ROOT.mkdir(parents=True, exist_ok=True)
 
-USERS_ROOT = APP_ROOT / "data" / "users"
+USERS_ROOT = _DATA_ROOT / "data" / "users"
 USERS_ROOT.mkdir(parents=True, exist_ok=True)
 USERS_FILE = USERS_ROOT / "users.json"
+
+# On first run after install, seed persistent data from bundled defaults.
+if getattr(sys, "frozen", False):
+    import shutil as _shutil
+    _bundled_data = _BUNDLE_ROOT / "data"
+    for _src in _bundled_data.rglob("*"):
+        if _src.is_file():
+            _rel = _src.relative_to(_bundled_data)
+            _dst = _DATA_ROOT / "data" / _rel
+            if not _dst.exists():
+                _dst.parent.mkdir(parents=True, exist_ok=True)
+                _shutil.copy2(_src, _dst)
+
 if not USERS_FILE.exists():
     USERS_FILE.write_text("[]", encoding="utf-8")
 
