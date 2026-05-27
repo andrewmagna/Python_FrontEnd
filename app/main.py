@@ -982,13 +982,14 @@ def health():
 
 @app.get("/api/opc/status", dependencies=[Depends(any_user_dep)])
 def opc_status():
-    orientation = get_table_orientation()
-    orientation_degrees = get_table_orientation_degrees()
+    return {"connected": is_connected()}
 
+
+@app.get("/api/opc/orientation", dependencies=[Depends(any_user_dep)])
+def opc_orientation():
     return {
-        "connected": is_connected(),
-        "table_orientation": orientation,
-        "table_orientation_degrees": orientation_degrees,
+        "orientation": get_table_orientation(),
+        "degrees": get_table_orientation_degrees(),
     }
 
 

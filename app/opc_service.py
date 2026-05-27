@@ -96,7 +96,7 @@ def connect():
     _index_built = False
 
     try:
-        endpoint = "opc.tcp://127.0.0.1:4850/Magna_IOServer"
+        endpoint = "opc.tcp://192.168.1.246:4850/Magna_IOServer"
 
         client = Client(endpoint)
         client.set_user("")
@@ -226,7 +226,7 @@ def _default_paths():
 
 
 def _get_cached_node(cache_name: str, target_name: str):
-    global _orientation_node, _part_name_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _force_reading_node, _program_started_node, _cycle_started_node, _cycle_completed_node
+    global _orientation_node, _part_name_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _force_reading_node, _program_started_node, _cycle_started_node, _cycle_completed_node, _opc_status_node
 
     _require_connection()
 

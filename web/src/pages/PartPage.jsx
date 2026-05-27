@@ -145,23 +145,6 @@ export default function PartPage() {
         if (!cancelled) {
           const nowConnected = !!data.connected;
           setOpcConnected(nowConnected);
-
-          if (nowConnected) {
-            setTableOrientation(
-              [1, 2, 3, 4].includes(data.table_orientation)
-                ? data.table_orientation
-                : null,
-            );
-            setTableOrientationDegrees(
-              typeof data.table_orientation_degrees === "number"
-                ? data.table_orientation_degrees
-                : null,
-            );
-          } else {
-            setTableOrientation(null);
-            setTableOrientationDegrees(null);
-          }
-
           setOpcStatusLoaded(true);
 
           if (nowConnected !== connectedRef.current) {
@@ -173,8 +156,6 @@ export default function PartPage() {
       } catch {
         if (!cancelled) {
           setOpcConnected(false);
-          setTableOrientation(null);
-          setTableOrientationDegrees(null);
           setOpcStatusLoaded(true);
 
           if (connectedRef.current) {
@@ -194,6 +175,46 @@ export default function PartPage() {
       clearInterval(t);
     };
   }, []);
+
+  useEffect(() => {
+    if (!opcConnected) {
+      setTableOrientation(null);
+      setTableOrientationDegrees(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function pollOrientation() {
+      try {
+        const res = await fetch(`/api/opc/orientation?t=${Date.now()}`, {
+          cache: "no-store",
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled) {
+          setTableOrientation(
+            [1, 2, 3, 4].includes(data.orientation) ? data.orientation : null,
+          );
+          setTableOrientationDegrees(
+            typeof data.degrees === "number" ? data.degrees : null,
+          );
+        }
+      } catch {
+        if (!cancelled) {
+          setTableOrientation(null);
+          setTableOrientationDegrees(null);
+        }
+      }
+    }
+
+    pollOrientation();
+    const t = setInterval(pollOrientation, 150);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [opcConnected]);
 
   useEffect(() => {
     if (!opcConnected) {
