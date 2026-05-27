@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import cv2
 
 from app.config_store import load_config
+
+_scan_parts_cache: Optional[List[Dict[str, Any]]] = None
+_scan_parts_cache_ts: float = 0.0
+_SCAN_PARTS_TTL: float = 5.0
+
+
+def invalidate_scan_cache() -> None:
+    global _scan_parts_cache
+    _scan_parts_cache = None
 
 
 def _discover_existing_sections(sections_dir: Path) -> List[int]:
@@ -20,7 +30,7 @@ def _discover_existing_sections(sections_dir: Path) -> List[int]:
     return existing
 
 
-def _read_image_size(image_path: Path) -> Dict[str, int]:
+def read_image_size(image_path: Path) -> Dict[str, int]:
     default_size = {"width": 1920, "height": 1080}
 
     if not image_path.exists():
@@ -73,7 +83,7 @@ def _normalize_zones(zones: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def _load_section_zone_payload(
     zones_file: Path, clean_image_path: Path
 ) -> Dict[str, Any]:
-    image_size = _read_image_size(clean_image_path)
+    image_size = read_image_size(clean_image_path)
     zones: List[Dict[str, Any]] = []
 
     if not zones_file.exists():
@@ -152,6 +162,12 @@ def get_part(part_id: str) -> Dict[str, Any]:
 
 
 def scan_parts() -> List[Dict[str, Any]]:
+    global _scan_parts_cache, _scan_parts_cache_ts
+
+    now = time.monotonic()
+    if _scan_parts_cache is not None and (now - _scan_parts_cache_ts) < _SCAN_PARTS_TTL:
+        return _scan_parts_cache
+
     cfg = load_config()
     root = Path(cfg.parts_root)
 
@@ -201,4 +217,6 @@ def scan_parts() -> List[Dict[str, Any]]:
         )
 
     parts.sort(key=lambda p: p["display_name"].lower())
+    _scan_parts_cache = parts
+    _scan_parts_cache_ts = now
     return parts

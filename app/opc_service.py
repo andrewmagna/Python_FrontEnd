@@ -20,6 +20,9 @@ _shift_start_time_node = None
 _shift_end_time_node = None
 _shift_completed_node = None
 _force_reading_node = None
+_program_started_node = None
+_cycle_started_node = None
+_cycle_completed_node = None
 _path_pass_nodes = {}
 _path_grit_nodes = {}
 _path_force_nodes = {}
@@ -36,6 +39,12 @@ def connect():
 
     load_config()
 
+    if client is not None:
+        try:
+            client.disconnect()
+        except Exception:
+            pass
+
     client = None
     connected = False
     _objects_node = None
@@ -48,6 +57,9 @@ def connect():
     _shift_end_time_node = None
     _shift_completed_node = None
     _force_reading_node = None
+    _program_started_node = None
+    _cycle_started_node = None
+    _cycle_completed_node = None
     _path_pass_nodes = {}
     _path_grit_nodes = {}
     _path_force_nodes = {}
@@ -57,7 +69,7 @@ def connect():
     _index_built = False
 
     try:
-        endpoint = "opc.tcp://192.168.0.149:4850/Magna_IOServer"
+        endpoint = "opc.tcp://127.0.0.1:4850/Magna_IOServer"
 
         client = Client(endpoint)
         client.set_user("")
@@ -69,6 +81,8 @@ def connect():
 
         connected = True
         print("OPC connected")
+
+        threading.Thread(target=_ensure_browse_name_index, daemon=True).start()
 
     except Exception as e:
         client = None
@@ -173,13 +187,6 @@ def _set_node_value(node, value, node_name: str):
         raise
 
 
-def _read_node_value(node, node_name: str, default=None):
-    try:
-        return node.get_value()
-    except Exception as e:
-        print(f"Failed reading {node_name}: {e}")
-        return default
-
 
 def _default_paths():
     return [
@@ -191,7 +198,7 @@ def _default_paths():
 
 
 def _get_cached_node(cache_name: str, target_name: str):
-    global _orientation_node, _part_name_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _force_reading_node
+    global _orientation_node, _part_name_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _force_reading_node, _program_started_node, _cycle_started_node, _cycle_completed_node
 
     _require_connection()
 
@@ -222,6 +229,15 @@ def _get_cached_node(cache_name: str, target_name: str):
     if cache_name == "force_reading" and _force_reading_node is not None:
         return _force_reading_node
 
+    if cache_name == "program_started" and _program_started_node is not None:
+        return _program_started_node
+
+    if cache_name == "cycle_started" and _cycle_started_node is not None:
+        return _cycle_started_node
+
+    if cache_name == "cycle_completed" and _cycle_completed_node is not None:
+        return _cycle_completed_node
+
     node = find_node_by_browse_name(_objects_node, target_name)
 
     if node is None:
@@ -246,6 +262,12 @@ def _get_cached_node(cache_name: str, target_name: str):
         _shift_completed_node = node
     elif cache_name == "force_reading":
         _force_reading_node = node
+    elif cache_name == "program_started":
+        _program_started_node = node
+    elif cache_name == "cycle_started":
+        _cycle_started_node = node
+    elif cache_name == "cycle_completed":
+        _cycle_completed_node = node
 
     return node
 
@@ -349,6 +371,37 @@ def get_force_reading() -> Optional[float]:
         return None
 
 
+def get_program_tags() -> dict:
+    _default = {"program_started": False, "cycle_started": False, "cycle_completed": False}
+
+    if not is_connected():
+        return _default
+
+    try:
+        ps_node = _get_cached_node("program_started", "Program_Started")
+        cs_node = _get_cached_node("cycle_started", "Cycle_Started")
+        cc_node = _get_cached_node("cycle_completed", "Cycle_Completed")
+
+        nodes = [(k, n) for k, n in [
+            ("program_started", ps_node),
+            ("cycle_started", cs_node),
+            ("cycle_completed", cc_node),
+        ] if n is not None]
+
+        if not nodes:
+            return _default
+
+        values = client.get_values([n for _, n in nodes])
+        result = dict(_default)
+        for (key, _), val in zip(nodes, values):
+            result[key] = bool(val)
+        return result
+
+    except Exception as e:
+        print("Failed reading program tags:", e)
+        return _default
+
+
 def get_paths():
     defaults = _default_paths()
 
@@ -359,74 +412,61 @@ def get_paths():
         _require_connection()
         _ensure_browse_name_index()
 
-        result = []
+        # Collect all available nodes and their metadata in one pass
+        read_items = []  # list of (path_num, field, node)
 
         for idx in range(4):
             path_num = idx + 1
-            default_path = defaults[idx]
 
-            passes_node_name = f"Path{path_num}_Num_Passes"
             passes_node = _path_pass_nodes.get(path_num)
             if passes_node is None:
-                passes_node = find_node_by_browse_name(_objects_node, passes_node_name)
+                passes_node = find_node_by_browse_name(_objects_node, f"Path{path_num}_Num_Passes")
                 if passes_node is None:
-                    _log_missing_node_once(passes_node_name)
+                    _log_missing_node_once(f"Path{path_num}_Num_Passes")
                 else:
                     _path_pass_nodes[path_num] = passes_node
-
             if passes_node is not None:
-                raw_passes = _read_node_value(passes_node, passes_node_name, default_path["passes"])
-                passes_value = _safe_int(raw_passes, default_path["passes"])
-                if passes_value is None:
-                    passes_value = default_path["passes"]
-                passes_value = max(0, passes_value)
-            else:
-                passes_value = default_path["passes"]
+                read_items.append((path_num, "passes", passes_node))
 
-            force_node_name = f"Pass{path_num}_Force"
             force_node = _path_force_nodes.get(path_num)
             if force_node is None:
-                force_node = find_node_by_browse_name(_objects_node, force_node_name)
+                force_node = find_node_by_browse_name(_objects_node, f"Pass{path_num}_Force")
                 if force_node is None:
-                    _log_missing_node_once(force_node_name)
+                    _log_missing_node_once(f"Pass{path_num}_Force")
                 else:
                     _path_force_nodes[path_num] = force_node
-
             if force_node is not None:
-                raw_force = _read_node_value(force_node, force_node_name, default_path["force"])
-                force_value = _safe_float(raw_force, default_path["force"])
-                if force_value is None:
-                    force_value = default_path["force"]
-                force_value = max(0, min(20, force_value))
-            else:
-                force_value = default_path["force"]
-
-            path_payload = {
-                "passes": passes_value,
-                "force": force_value,
-            }
+                read_items.append((path_num, "force", force_node))
 
             if path_num <= 3:
-                grit_node_name = f"Path{path_num}_Grit"
                 grit_node = _path_grit_nodes.get(path_num)
                 if grit_node is None:
-                    grit_node = find_node_by_browse_name(_objects_node, grit_node_name)
+                    grit_node = find_node_by_browse_name(_objects_node, f"Path{path_num}_Grit")
                     if grit_node is None:
-                        _log_missing_node_once(grit_node_name)
+                        _log_missing_node_once(f"Path{path_num}_Grit")
                     else:
                         _path_grit_nodes[path_num] = grit_node
-
                 if grit_node is not None:
-                    raw_grit = _read_node_value(grit_node, grit_node_name, default_path["grit"])
-                    grit_value = _safe_int(raw_grit, default_path["grit"])
-                    if grit_value not in (80, 120, 180):
-                        grit_value = default_path["grit"]
-                else:
-                    grit_value = default_path["grit"]
+                    read_items.append((path_num, "grit", grit_node))
 
-                path_payload["grit"] = grit_value
+        result = [dict(d) for d in defaults]
 
-            result.append(path_payload)
+        if read_items:
+            raw_values = client.get_values([node for _, _, node in read_items])
+
+            for (path_num, field, _), raw in zip(read_items, raw_values):
+                idx = path_num - 1
+                d = defaults[idx]
+                if field == "passes":
+                    v = _safe_int(raw, d["passes"])
+                    result[idx]["passes"] = max(0, v if v is not None else d["passes"])
+                elif field == "force":
+                    v = _safe_float(raw, d["force"])
+                    v = v if v is not None else d["force"]
+                    result[idx]["force"] = max(0, min(20, v))
+                elif field == "grit":
+                    v = _safe_int(raw, d["grit"])
+                    result[idx]["grit"] = v if v in (80, 120, 180) else d["grit"]
 
         return result
 
@@ -490,7 +530,7 @@ def write_zones(part_id, zones):
         print("Skipping missing OPC node: part_name")
         return
 
-    _set_node_value(part_node, part_id, "part_name")
+    _set_node_value(part_node, part_id.replace("_", " "), "part_name")
 
 
 def write_paths(paths):
@@ -522,7 +562,7 @@ def write_paths(paths):
         if passes_node is not None:
             _set_node_value(passes_node, passes_value, passes_node_name)
 
-        force_node_name = f"Path{path_num}_Force"
+        force_node_name = f"Pass{path_num}_Force"
         force_node = _path_force_nodes.get(path_num)
         if force_node is None:
             force_node = find_node_by_browse_name(_objects_node, force_node_name)
@@ -635,3 +675,19 @@ def write_shift_completed(value: int):
         return
 
     _set_node_value(node, int(value), "Shift_Completed")
+
+
+_reconnect_stop = threading.Event()
+
+
+def _reconnect_worker():
+    while not _reconnect_stop.wait(10):
+        if not is_connected():
+            print("OPC reconnect attempt...")
+            connect()
+
+
+def start_reconnect_loop():
+    _reconnect_stop.clear()
+    t = threading.Thread(target=_reconnect_worker, daemon=True)
+    t.start()

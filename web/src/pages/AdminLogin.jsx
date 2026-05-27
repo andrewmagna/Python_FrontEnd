@@ -197,7 +197,7 @@ export default function AdminLogin() {
             style={{
               padding: "11px",
               borderRadius: 12,
-              border: activeTab === "admin" ? "1px solid #2563eb" : "#d1d5db",
+              border: activeTab === "admin" ? "1px solid #2563eb" : "1px solid #d1d5db",
               background: activeTab === "admin" ? "#eff6ff" : "#fff",
               fontWeight: 700,
               cursor: "pointer",

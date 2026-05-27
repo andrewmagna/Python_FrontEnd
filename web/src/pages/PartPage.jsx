@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
+import { useSession } from "../SessionContext.jsx";
 
 const ORIENTATION_LABELS = {
   1: "0°",
@@ -21,6 +22,7 @@ function getDefaultPaths() {
 
 export default function PartPage() {
   const { partId } = useParams();
+  const navigate = useNavigate();
 
   const [part, setPart] = useState(null);
   const [zoneState, setZoneState] = useState({});
@@ -33,7 +35,8 @@ export default function PartPage() {
   const [debugOrientationOverride, setDebugOrientationOverride] =
     useState("live");
   const [isNarrow, setIsNarrow] = useState(false);
-  const [sessionUser, setSessionUser] = useState(null);
+  const sessionData = useSession();
+  const sessionUser = sessionData?.authenticated ? sessionData.user : null;
 
 
   const [forceReading, setForceReading] = useState(null);
@@ -53,6 +56,18 @@ export default function PartPage() {
   const saveLastStateTimeoutRef = useRef(null);
   const hasLoadedLastStateRef = useRef(false);
   const isRestoringLastStateRef = useRef(false);
+
+  const [programProgress, setProgramProgress] = useState({
+    running: false,
+    stepIndex: 0,
+    passCount: 0,
+  });
+  const programStateRef = useRef({
+    prevProgramStarted: false,
+    prevCycleCompleted: false,
+    stepIndex: 0,
+    passCount: 0,
+  });
 
   async function refreshRecipes() {
     try {
@@ -115,6 +130,8 @@ export default function PartPage() {
 
   useEffect(() => {
     let cancelled = false;
+    let t = null;
+    const connectedRef = { current: false };
 
     async function poll() {
       try {
@@ -122,18 +139,32 @@ export default function PartPage() {
         const data = await res.json();
 
         if (!cancelled) {
-          setOpcConnected(!!data.connected);
-          setTableOrientation(
-            [1, 2, 3, 4].includes(data.table_orientation)
-              ? data.table_orientation
-              : null,
-          );
-          setTableOrientationDegrees(
-            typeof data.table_orientation_degrees === "number"
-              ? data.table_orientation_degrees
-              : null,
-          );
+          const nowConnected = !!data.connected;
+          setOpcConnected(nowConnected);
+
+          if (nowConnected) {
+            setTableOrientation(
+              [1, 2, 3, 4].includes(data.table_orientation)
+                ? data.table_orientation
+                : null,
+            );
+            setTableOrientationDegrees(
+              typeof data.table_orientation_degrees === "number"
+                ? data.table_orientation_degrees
+                : null,
+            );
+          } else {
+            setTableOrientation(null);
+            setTableOrientationDegrees(null);
+          }
+
           setOpcStatusLoaded(true);
+
+          if (nowConnected !== connectedRef.current) {
+            connectedRef.current = nowConnected;
+            clearInterval(t);
+            t = setInterval(poll, nowConnected ? 150 : 2000);
+          }
         }
       } catch {
         if (!cancelled) {
@@ -141,12 +172,18 @@ export default function PartPage() {
           setTableOrientation(null);
           setTableOrientationDegrees(null);
           setOpcStatusLoaded(true);
+
+          if (connectedRef.current) {
+            connectedRef.current = false;
+            clearInterval(t);
+            t = setInterval(poll, 2000);
+          }
         }
       }
     }
 
     poll();
-    const t = setInterval(poll, 2000);
+    t = setInterval(poll, 2000);
 
     return () => {
       cancelled = true;
@@ -155,6 +192,11 @@ export default function PartPage() {
   }, []);
 
   useEffect(() => {
+    if (!opcConnected) {
+      setForceReading(null);
+      return;
+    }
+
     let cancelled = false;
 
     async function pollForce() {
@@ -179,13 +221,62 @@ export default function PartPage() {
     }
 
     pollForce();
-    const t = setInterval(pollForce, 500);
+    const t = setInterval(pollForce, 150);
 
     return () => {
       cancelled = true;
       clearInterval(t);
     };
-  }, []);
+  }, [opcConnected]);
+
+  useEffect(() => {
+    if (!opcConnected) {
+      programStateRef.current = { prevProgramStarted: false, prevCycleCompleted: false, stepIndex: 0, passCount: 0 };
+      setProgramProgress({ running: false, stepIndex: 0, passCount: 0 });
+      return;
+    }
+
+    let cancelled = false;
+
+    async function pollProgram() {
+      try {
+        const res = await fetch("/api/opc/program-status");
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+
+        const ps = !!data.program_started;
+        const cc = !!data.cycle_completed;
+        const ref = programStateRef.current;
+
+        let { stepIndex, passCount } = ref;
+        let running = ps;
+
+        if (ps && !ref.prevProgramStarted) {
+          stepIndex = 0;
+          passCount = 0;
+        } else if (ps && cc && !ref.prevCycleCompleted) {
+          passCount += 1;
+          const activeSteps = (paths || []).filter((p) => (p.passes ?? 0) > 0);
+          const currentStep = activeSteps[stepIndex];
+          if (currentStep && passCount >= currentStep.passes) {
+            let next = stepIndex + 1;
+            while (next < activeSteps.length && (activeSteps[next].passes ?? 0) === 0) next++;
+            stepIndex = next < activeSteps.length ? next : stepIndex;
+            passCount = 0;
+          }
+        }
+
+        programStateRef.current = { prevProgramStarted: ps, prevCycleCompleted: cc, stepIndex, passCount };
+        if (!cancelled) setProgramProgress({ running, stepIndex, passCount });
+      } catch {
+        // ignore
+      }
+    }
+
+    pollProgram();
+    const t = setInterval(pollProgram, 100);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [opcConnected, paths]);
 
   const effectiveOrientation =
     debugOrientationOverride === "live"
@@ -195,31 +286,6 @@ export default function PartPage() {
   useEffect(() => {
     refreshRecipes();
   }, [partId]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadSession() {
-      try {
-        const res = await fetch("/api/session");
-        const data = await res.json();
-
-        if (!cancelled) {
-          setSessionUser(data.authenticated ? data.user : null);
-        }
-      } catch {
-        if (!cancelled) {
-          setSessionUser(null);
-        }
-      }
-    }
-
-    loadSession();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
 
   useEffect(() => {
     if (!part) return;
@@ -473,19 +539,31 @@ export default function PartPage() {
   function persistLastState(nextState, options = {}) {
     if (!partId) return;
 
-    if (saveLastStateTimeoutRef.current) {
-      clearTimeout(saveLastStateTimeoutRef.current);
-      saveLastStateTimeoutRef.current = null;
+    if (options.keepalive) {
+      if (saveLastStateTimeoutRef.current) {
+        clearTimeout(saveLastStateTimeoutRef.current);
+        saveLastStateTimeoutRef.current = null;
+      }
+      fetch(`/api/parts/${partId}/last-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextState),
+        keepalive: true,
+      }).catch(() => {});
+      return;
     }
 
-    fetch(`/api/parts/${partId}/last-state`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(nextState),
-      keepalive: !!options.keepalive,
-    }).catch(() => {});
+    if (saveLastStateTimeoutRef.current) {
+      clearTimeout(saveLastStateTimeoutRef.current);
+    }
+    saveLastStateTimeoutRef.current = setTimeout(() => {
+      saveLastStateTimeoutRef.current = null;
+      fetch(`/api/parts/${partId}/last-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextState),
+      }).catch(() => {});
+    }, 300);
   }
 
   function flushLastState(options = {}) {
@@ -708,11 +786,12 @@ export default function PartPage() {
     };
 
     setZoneState(nextState);
+    setSelectedRecipeId(null);
     persistLastState(
       buildLastStatePayload({
         zones: nextState,
         paths,
-        selected_recipe_id: selectedRecipeId,
+        selected_recipe_id: null,
       }),
     );
     await pushZoneState(nextState, () => setZoneState(previousState));
@@ -723,6 +802,7 @@ export default function PartPage() {
     const nextState = createEmptyZoneState();
 
     setZoneState(nextState);
+    setSelectedRecipeId(null);
     persistLastState(
       buildLastStatePayload({
         zones: nextState,
@@ -742,11 +822,12 @@ export default function PartPage() {
     }
 
     setZoneState(nextState);
+    setSelectedRecipeId(null);
     persistLastState(
       buildLastStatePayload({
         zones: nextState,
         paths,
-        selected_recipe_id: selectedRecipeId,
+        selected_recipe_id: null,
       }),
     );
     await pushZoneState(nextState, () => setZoneState(previousState));
@@ -797,6 +878,7 @@ export default function PartPage() {
   const currentRole = sessionUser?.role || null;
   const canSeeDebug = currentRole === "admin";
   const canSeeAdmin = currentRole === "admin" || currentRole === "supervisor";
+  const canSaveRecipe = currentRole === "admin" || currentRole === "supervisor";
 
   if (!part) {
     return <div style={{ padding: 16 }}>Loading...</div>;
@@ -909,7 +991,7 @@ export default function PartPage() {
             {canSeeAdmin ? (
               <button
                 onClick={() => {
-                  window.location.href = `/admin/editor/${part.part_id}/${firstEditableSection}?return=part`;
+                  navigate(`/admin/editor/${part.part_id}/${firstEditableSection}?return=part`);
                 }}
                 style={{
                   padding: "12px 18px",
@@ -1213,12 +1295,15 @@ export default function PartPage() {
               </button>
               <button
                 onClick={() => {
+                  if (!canSaveRecipe) return;
                   setRecipeNameInput("");
                   setRecipeDescriptionInput("");
                   setSaveRecipeOpen(true);
                 }}
+                disabled={!canSaveRecipe}
+                title={!canSaveRecipe ? "Supervisor or admin required to save recipes" : undefined}
                 style={{
-                  ...buttonStyle(),
+                  ...buttonStyle(!canSaveRecipe),
                   textAlign: "center",
                   flex: 1,
                   padding: "8px 12px",
@@ -1298,16 +1383,16 @@ export default function PartPage() {
 
         <div
           style={{
-            display: "grid",
-            gap: 12,
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
             width: "100%",
-            alignContent: "start",
-            overflow: "auto",
+            height: "100%",
+            overflow: "hidden",
             minHeight: 0,
-            paddingRight: 2,
           }}
         >
-          <Card title="Status">
+          <Card title="Status" style={{ flex: "0 0 auto" }}>
             <StatusRow
               label="OPC"
               value={opcConnected ? "Connected" : "Disconnected"}
@@ -1332,7 +1417,7 @@ export default function PartPage() {
             />
           </Card>
 
-          <Card title="Zone Actions">
+          <Card title="Zone Actions" style={{ flex: "0 0 auto" }}>
             <div style={{ display: "grid", gap: 10 }}>
               <button
                 onClick={clearAll}
@@ -1365,7 +1450,7 @@ export default function PartPage() {
           </Card>
 
           {canSeeDebug && (
-            <Card title="Debug">
+            <Card title="Debug" style={{ flex: "0 0 auto" }}>
               <div style={{ display: "grid", gap: 8 }}>
                 <label
                   style={{ fontSize: 13, fontWeight: 600, color: "#4b5563" }}
@@ -1412,11 +1497,11 @@ export default function PartPage() {
           )}
 
           {canSeeAdmin && (
-            <Card title="Admin">
+            <Card title="Admin" style={{ flex: "0 0 auto" }}>
               <div style={{ display: "grid", gap: 8 }}>
                 <button
                   onClick={() => {
-                    window.location.href = `/admin/editor/${part.part_id}/1?return=part`;
+                    navigate(`/admin/editor/${part.part_id}/1?return=part`);
                   }}
                   style={buttonStyle()}
                 >
@@ -1425,7 +1510,7 @@ export default function PartPage() {
 
                 <button
                   onClick={() => {
-                    window.location.href = `/admin/recipes/${part.part_id}?return=part`;
+                    navigate(`/admin/recipes/${part.part_id}?return=part`);
                   }}
                   style={buttonStyle()}
                 >
@@ -1434,7 +1519,7 @@ export default function PartPage() {
 
                 <button
                   onClick={() => {
-                    window.location.href = `/admin/users?return=part`;
+                    navigate(`/admin/users?return=part`);
                   }}
                   style={buttonStyle()}
                 >
@@ -1443,10 +1528,17 @@ export default function PartPage() {
               </div>
             </Card>
           )}
+
+          <ProgramProgressCard
+            paths={paths}
+            programProgress={programProgress}
+            opcConnected={opcConnected}
+            style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
+          />
         </div>
       </div>
 
-      {saveRecipeOpen && (
+      {saveRecipeOpen && canSaveRecipe && (
         <div
           style={{
             position: "fixed",
@@ -1695,20 +1787,22 @@ function SectionViewer({
             const available = isZoneAvailable(z);
 
             const fill = active
-              ? "rgba(22,163,74,0.42)"
+              ? "rgba(22,163,74,0.55)"
               : !available
-                ? "rgba(107,114,128,0.14)"
+                ? "rgba(107,114,128,0.10)"
                 : hovered
-                  ? "rgba(59,130,246,0.32)"
-                  : "rgba(59,130,246,0.20)";
+                  ? "rgba(59,130,246,0.55)"
+                  : "rgba(59,130,246,0.38)";
 
             const stroke = active
-              ? "rgba(21,128,61,0.95)"
+              ? "#15803d"
               : !available
-                ? "rgba(107,114,128,0.45)"
+                ? "rgba(107,114,128,0.30)"
                 : hovered
-                  ? "rgba(59,130,246,0.7)"
-                  : "rgba(107,114,128,0.25)";
+                  ? "#1d4ed8"
+                  : "#2563eb";
+
+            const strokeWidth = active ? "3" : available ? "3" : "1.5";
 
             return (
               <polygon
@@ -1716,7 +1810,7 @@ function SectionViewer({
                 points={z.points.map((p) => p.join(",")).join(" ")}
                 fill={fill}
                 stroke={stroke}
-                strokeWidth="2"
+                strokeWidth={strokeWidth}
                 onClick={() => {
                   if (!available) return;
                   toggleZone(z.zone_id);
@@ -1736,7 +1830,7 @@ function SectionViewer({
   );
 }
 
-function Card({ title, children }) {
+function Card({ title, children, style: extraStyle }) {
   return (
     <div
       style={{
@@ -1746,6 +1840,7 @@ function Card({ title, children }) {
         padding: 10,
         width: "100%",
         boxSizing: "border-box",
+        ...extraStyle,
       }}
     >
       <div
@@ -1825,6 +1920,96 @@ function primaryButtonStyle(disabled = false) {
     width: "100%",
     boxSizing: "border-box",
   };
+}
+
+function ProgramProgressCard({ paths, programProgress, opcConnected, style: extraStyle }) {
+  const activeSteps = (paths || []).filter((p) => (p.passes ?? 0) > 0);
+  const { running, stepIndex, passCount } = programProgress;
+
+  const currentStep = running ? activeSteps[stepIndex] : null;
+  const totalPasses = currentStep?.passes ?? 0;
+  const grit = currentStep?.grit ?? null;
+  const displayStep = running ? stepIndex + 1 : null;
+
+  const vbSize = 120;
+  const strokeWidth = 10;
+  const radius = (vbSize - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const progress = totalPasses > 0 ? Math.min(passCount / totalPasses, 1) : 0;
+  const dashOffset = circumference * (1 - progress);
+
+  const idle = !opcConnected || !running;
+  const ringColor = idle ? "#e5e7eb" : "#2563eb";
+  const trackColor = "#f1f5f9";
+
+  return (
+    <Card title="Program Progress" style={{ ...extraStyle, overflow: "hidden" }}>
+      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, overflow: "hidden" }}>
+        <div style={{ position: "relative", width: "100%", maxWidth: vbSize }}>
+          <svg
+            viewBox={`0 0 ${vbSize} ${vbSize}`}
+            width="100%"
+            style={{ display: "block", transform: "rotate(-90deg)" }}
+          >
+            <circle
+              cx={vbSize / 2}
+              cy={vbSize / 2}
+              r={radius}
+              fill="none"
+              stroke={trackColor}
+              strokeWidth={strokeWidth}
+            />
+            <circle
+              cx={vbSize / 2}
+              cy={vbSize / 2}
+              r={radius}
+              fill="none"
+              stroke={ringColor}
+              strokeWidth={strokeWidth}
+              strokeDasharray={circumference}
+              strokeDashoffset={dashOffset}
+              strokeLinecap="round"
+              style={{ transition: "stroke-dashoffset 0.15s ease, stroke 0.2s ease" }}
+            />
+          </svg>
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 2,
+            }}
+          >
+            {idle ? (
+              <span style={{ fontSize: 22, fontWeight: 700, color: "#9ca3af" }}>—</span>
+            ) : (
+              <>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", lineHeight: 1 }}>
+                  Step {displayStep}
+                </span>
+                <span style={{ fontSize: 18, fontWeight: 800, color: "#1e3a5f", lineHeight: 1 }}>
+                  {grit != null ? `G${grit}` : "—"}
+                </span>
+                <span style={{ fontSize: 11, color: "#6b7280", lineHeight: 1, marginTop: 1 }}>
+                  {passCount} / {totalPasses}
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: idle ? "#9ca3af" : "#374151", fontWeight: 600, flex: "0 0 auto" }}>
+          {!opcConnected
+            ? "OPC Disconnected"
+            : running
+            ? "Program Running"
+            : "Idle"}
+        </div>
+      </div>
+    </Card>
+  );
 }
 
 const backLinkStyle = {

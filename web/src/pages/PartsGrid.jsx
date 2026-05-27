@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 
 export default function PartsGrid() {
   const [parts, setParts] = useState([]);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
   const navigate = useNavigate();
 
@@ -15,9 +16,15 @@ export default function PartsGrid() {
         const res = await fetch("/api/parts");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (!cancelled) setParts(data);
+        if (!cancelled) {
+          setParts(data);
+          setLoaded(true);
+        }
       } catch (e) {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) {
+          setError(String(e));
+          setLoaded(true);
+        }
       }
     }
 
@@ -88,7 +95,7 @@ export default function PartsGrid() {
         </div>
       )}
 
-      {parts.length === 0 && !error ? (
+      {!loaded && !error ? (
         <div
           style={{
             border: "1px solid #e5e7eb",
@@ -100,6 +107,19 @@ export default function PartsGrid() {
           }}
         >
           Loading parts...
+        </div>
+      ) : parts.length === 0 && !error ? (
+        <div
+          style={{
+            border: "1px solid #e5e7eb",
+            background: "#ffffff",
+            borderRadius: 16,
+            padding: 24,
+            color: "#6b7280",
+            fontSize: 15,
+          }}
+        >
+          No parts found. Make sure the parts directory is configured and contains at least one part folder with a thumb.png.
         </div>
       ) : (
         <div

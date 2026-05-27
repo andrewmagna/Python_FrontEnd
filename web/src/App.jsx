@@ -7,6 +7,7 @@ import AdminEditor from "./pages/AdminEditor.jsx";
 import AppHeader from "./components/AppHeader.jsx";
 import AdminRecipes from "./pages/AdminRecipes.jsx";
 import AdminUsers from "./pages/AdminUsers.jsx";
+import { SessionContext } from "./SessionContext.jsx";
 
 function ProtectedRoute({ session, children }) {
   if (!session?.authenticated) {
@@ -18,7 +19,7 @@ function ProtectedRoute({ session, children }) {
 export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
-  const [session, setSession] = useState({ loading: true, authenticated: false, user: null });
+  const [session, setSession] = useState({ loading: true, authenticated: false, user: null, inactivity_timeout_minutes: 15 });
 
   useEffect(() => {
     let cancelled = false;
@@ -32,6 +33,7 @@ export default function App() {
             loading: false,
             authenticated: !!data.authenticated,
             user: data.user || null,
+            inactivity_timeout_minutes: data.inactivity_timeout_minutes ?? 15,
           });
         }
       } catch {
@@ -51,7 +53,7 @@ export default function App() {
     if (!session.authenticated) return;
 
     let timeoutId;
-    const timeoutMs = 15 * 60 * 1000;
+    const timeoutMs = (session.inactivity_timeout_minutes ?? 15) * 60 * 1000;
 
     async function forceLogout() {
       try {
@@ -86,7 +88,7 @@ export default function App() {
   }
 
   return (
-    <>
+    <SessionContext.Provider value={{ session, setSession }}>
       <div
         style={{
           minHeight: "100vh",
@@ -153,6 +155,6 @@ export default function App() {
           </Routes>
         </div>
       </div>
-    </>
+    </SessionContext.Provider>
   );
 }

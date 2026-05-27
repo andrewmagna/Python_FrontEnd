@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -38,7 +38,7 @@ def log_apply(part_id: str, zone_states: Dict[str, Any]) -> None:
 
     payload_states = json.dumps(zone_states, separators=(",", ":"))
     payload_selected = json.dumps(selected, separators=(",", ":"))
-    ts = datetime.now().isoformat(timespec="seconds")
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     with sqlite3.connect(db_path()) as conn:
         conn.execute(

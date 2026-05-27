@@ -1,12 +1,12 @@
 {
   "part_id": "LH_Part",
-  "orientation": 1,
+  "orientation": null,
   "zones": {
-    "1": true,
-    "2": true,
-    "3": true,
-    "4": true,
-    "5": true,
+    "1": false,
+    "2": false,
+    "3": false,
+    "4": false,
+    "5": false,
     "6": false,
     "7": false,
     "8": false,
@@ -46,12 +46,12 @@
   "paths": [
     {
       "passes": 0,
-      "grit": 120,
+      "grit": 80,
       "force": 10
     },
     {
       "passes": 0,
-      "grit": 180,
+      "grit": 120,
       "force": 10
     },
     {
@@ -64,6 +64,6 @@
       "force": 10
     }
   ],
-  "selected_recipe_id": 0,
-  "saved_at": 1776870163186
+  "selected_recipe_id": null,
+  "saved_at": 1779887284878
 }

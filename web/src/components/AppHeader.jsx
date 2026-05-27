@@ -1,40 +1,19 @@
-import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import bannerImg from "../assets/banner.png";
+import { useSession, useSetSession } from "../SessionContext.jsx";
 
 export default function AppHeader() {
-  const [session, setSession] = useState(null);
+  const sessionData = useSession();
+  const session = sessionData?.authenticated ? sessionData.user : null;
+  const setSession = useSetSession();
   const navigate = useNavigate();
   const location = useLocation();
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadSession() {
-      try {
-        const res = await fetch("/api/session");
-        const data = await res.json();
-        if (!cancelled) {
-          setSession(data.authenticated ? data.user : null);
-        }
-      } catch {
-        if (!cancelled) {
-          setSession(null);
-        }
-      }
-    }
-
-    loadSession();
-    return () => {
-      cancelled = true;
-    };
-  }, [location.pathname]);
 
   async function handleLogout() {
     try {
       await fetch("/api/logout", { method: "POST" });
     } catch {}
-    setSession(null);
+    setSession({ loading: false, authenticated: false, user: null });
     navigate("/login", { replace: true });
   }
 

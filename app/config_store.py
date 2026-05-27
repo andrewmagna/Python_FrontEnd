@@ -26,7 +26,6 @@ def app_data_dir() -> Path:
     if "windows" in system:
         appdata = os.environ.get("APPDATA")
         if not appdata:
-            # Fallback, should be rare, but Windows loves surprises
             appdata = str(Path.home() / "AppData" / "Roaming")
         return Path(appdata) / APP_NAME
 
@@ -51,10 +50,27 @@ class AppConfig:
         return AppConfig(parts_root=default_parts_root())
 
 
+_config_cache: Optional[AppConfig] = None
+_config_cache_mtime: float = -1.0
+
+
 def load_config() -> AppConfig:
+    global _config_cache, _config_cache_mtime
+
     p = config_path()
+    try:
+        mtime = p.stat().st_mtime if p.exists() else -1.0
+    except OSError:
+        mtime = -1.0
+
+    if _config_cache is not None and mtime == _config_cache_mtime:
+        return _config_cache
+
     if not p.exists():
-        return AppConfig.default()
+        cfg = AppConfig.default()
+        _config_cache = cfg
+        _config_cache_mtime = mtime
+        return cfg
 
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
@@ -63,19 +79,26 @@ def load_config() -> AppConfig:
         admin_password = str(data.get("admin_password") or "admin123")
         secret_key = str(data.get("secret_key") or "dev_secret_change_me")
         inactivity_timeout_minutes = int(data.get("inactivity_timeout_minutes") or 15)
-        return AppConfig(
+        cfg = AppConfig(
             parts_root=parts_root,
             admin_username=admin_username,
             admin_password=admin_password,
             secret_key=secret_key,
             inactivity_timeout_minutes=inactivity_timeout_minutes,
         )
+        _config_cache = cfg
+        _config_cache_mtime = mtime
+        return cfg
     except Exception:
-        # Corrupt config, fall back to default instead of bricking the app
-        return AppConfig.default()
+        cfg = AppConfig.default()
+        _config_cache = cfg
+        _config_cache_mtime = mtime
+        return cfg
 
 
 def save_config(cfg: AppConfig) -> None:
+    global _config_cache, _config_cache_mtime
+
     d = app_data_dir()
     d.mkdir(parents=True, exist_ok=True)
     p = config_path()
@@ -87,17 +110,17 @@ def save_config(cfg: AppConfig) -> None:
         "inactivity_timeout_minutes": cfg.inactivity_timeout_minutes,
     }
     p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    _config_cache = cfg
+    try:
+        _config_cache_mtime = p.stat().st_mtime
+    except OSError:
+        _config_cache_mtime = -1.0
 
 
 def validate_parts_root(path_str: str) -> Optional[str]:
-    """
-    Returns None if OK, else returns an error message.
-    We keep validation light for v1.
-    """
     p = Path(path_str).expanduser()
     if not p.exists():
         return "Path does not exist."
     if not p.is_dir():
         return "Path is not a directory."
-    # Optional: allow empty folder, user may set up later.
     return None

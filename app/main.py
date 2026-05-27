@@ -5,7 +5,7 @@ import sys
 import threading
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -20,7 +20,6 @@ from app.admin_auth import (
     any_user_dep,
     clear_session_cookie,
     get_session,
-    is_admin,
     set_session_cookie,
     supervisor_or_admin_dep,
 )
@@ -28,7 +27,9 @@ from app.audit import init_db, log_apply
 from app.config_store import AppConfig, load_config, save_config, validate_parts_root
 from app.opc_service import (
     connect,
+    start_reconnect_loop,
     write_zones,
+    write_paths,
     is_connected,
     get_table_orientation,
     get_table_orientation_degrees,
@@ -40,22 +41,21 @@ from app.opc_service import (
     write_shift_start_time,
     write_shift_end_time,
     write_shift_completed,
+    get_program_tags,
 )
 from app.overlay_import import import_polygons_from_overlay
-from app.parts_service import get_part, scan_parts
+from app.parts_service import get_part, scan_parts, invalidate_scan_cache, read_image_size
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_: FastAPI):
     connect()
+    start_reconnect_loop()
     init_db()
     yield
 
 
 app = FastAPI(title="ZoneSelect", lifespan=lifespan)
-
-cfg = load_config()
-parts_root = Path(cfg.parts_root)
 
 if getattr(sys, "frozen", False):
     APP_ROOT = Path(sys._MEIPASS)
@@ -65,20 +65,17 @@ else:
 WEB_DIST = APP_ROOT / "web" / "dist"
 WEB_INDEX = WEB_DIST / "index.html"
 
-RECIPES_ROOT = Path("data/recipes")
+RECIPES_ROOT = APP_ROOT / "data" / "recipes"
 RECIPES_ROOT.mkdir(parents=True, exist_ok=True)
 
-LAST_STATE_ROOT = Path("data/last_state")
+LAST_STATE_ROOT = APP_ROOT / "data" / "last_state"
 LAST_STATE_ROOT.mkdir(parents=True, exist_ok=True)
 
-USERS_ROOT = Path("data/users")
+USERS_ROOT = APP_ROOT / "data" / "users"
 USERS_ROOT.mkdir(parents=True, exist_ok=True)
 USERS_FILE = USERS_ROOT / "users.json"
 if not USERS_FILE.exists():
     USERS_FILE.write_text("[]", encoding="utf-8")
-
-if parts_root.exists():
-    app.mount("/parts", StaticFiles(directory=parts_root), name="parts")
 
 if (WEB_DIST / "assets").exists():
     app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
@@ -176,15 +173,6 @@ def _ensure_existing_section(part_dir: Path, section_index: int) -> Path:
     return image_path
 
 
-def _read_image_size(image_path: Path) -> dict[str, int]:
-    default_size = {"width": 1920, "height": 1080}
-
-    img = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
-    if img is None:
-        return default_size
-
-    height, width = img.shape[:2]
-    return {"width": int(width), "height": int(height)}
 
 
 def _normalize_zone_for_response(zone: dict[str, Any]) -> dict[str, Any]:
@@ -260,7 +248,12 @@ def session_status(request: Request, response: Response):
         return {"authenticated": False, "user": None}
 
     set_session_cookie(response, session)
-    return {"authenticated": True, "user": session}
+    cfg = load_config()
+    return {
+        "authenticated": True,
+        "user": session,
+        "inactivity_timeout_minutes": cfg.inactivity_timeout_minutes,
+    }
 
 
 @app.post("/api/login/rfid")
@@ -325,7 +318,7 @@ def create_user(req: UserUpsertRequest, request: Request):
         "display_name": display_name,
         "role": role,
         "card_id": card_id,
-        "created_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "created_by": _current_user_name(request),
     }
     users.append(new_user)
@@ -348,21 +341,28 @@ def delete_user(user_id: int, request: Request):
     return {"ok": True}
 
 
-@app.get("/api/config", response_model=ConfigResponse)
+@app.get("/api/config", response_model=ConfigResponse, dependencies=[Depends(admin_dep)])
 def get_config() -> ConfigResponse:
     cfg = load_config()
     return ConfigResponse(parts_root=cfg.parts_root)
 
 
-@app.post("/api/config", response_model=ConfigResponse)
+@app.post("/api/config", response_model=ConfigResponse, dependencies=[Depends(admin_dep)])
 def set_config(req: ConfigUpdateRequest) -> ConfigResponse:
     err = validate_parts_root(req.parts_root)
     if err is not None:
         raise HTTPException(status_code=400, detail=err)
 
-    cfg = AppConfig(parts_root=req.parts_root)
-    save_config(cfg)
-    return ConfigResponse(parts_root=cfg.parts_root)
+    existing = load_config()
+    new_cfg = AppConfig(
+        parts_root=req.parts_root,
+        admin_username=existing.admin_username,
+        admin_password=existing.admin_password,
+        secret_key=existing.secret_key,
+        inactivity_timeout_minutes=existing.inactivity_timeout_minutes,
+    )
+    save_config(new_cfg)
+    return ConfigResponse(parts_root=new_cfg.parts_root)
 
 
 @app.get("/api/parts", dependencies=[Depends(any_user_dep)])
@@ -600,7 +600,7 @@ def _recipe_id_matches(recipe: dict[str, Any], recipe_id: int) -> bool:
 
 
 
-@app.get("/api/editor/parts/{part_id}/sections/{section_index}", dependencies=[Depends(admin_dep)])
+@app.get("/api/editor/parts/{part_id}/sections/{section_index}", dependencies=[Depends(supervisor_or_admin_dep)])
 def editor_get_section(part_id: str, section_index: int):
     cfg = load_config()
     root = Path(cfg.parts_root)
@@ -614,7 +614,7 @@ def editor_get_section(part_id: str, section_index: int):
 
     zones_payload = {
         "image": image_path.name,
-        "image_size": _read_image_size(image_path),
+        "image_size": read_image_size(image_path),
         "zones": [],
     }
 
@@ -624,7 +624,7 @@ def editor_get_section(part_id: str, section_index: int):
             raw_zones = loaded.get("zones", [])
             zones_payload = {
                 "image": loaded.get("image", image_path.name),
-                "image_size": loaded.get("image_size", _read_image_size(image_path)),
+                "image_size": loaded.get("image_size", read_image_size(image_path)),
                 "zones": [
                     _normalize_zone_for_response(z)
                     for z in raw_zones
@@ -649,7 +649,7 @@ def editor_get_section(part_id: str, section_index: int):
         "part_id": part_id,
         "section_index": section_index,
         "image_url": f"/parts/{part_id}/sections/section{section_index}_clean.png?v={mtime}",
-        "image_size": zones_payload.get("image_size", _read_image_size(image_path)),
+        "image_size": zones_payload.get("image_size", read_image_size(image_path)),
         "zones": zones_payload.get("zones", []),
         "part_used_zone_ids_other_sections": part_usage["used_ids"],
         "section_used_zone_ids": current_section_ids,
@@ -657,7 +657,7 @@ def editor_get_section(part_id: str, section_index: int):
     }
 
 
-@app.post("/api/editor/parts/{part_id}/sections/{section_index}", dependencies=[Depends(admin_dep)])
+@app.post("/api/editor/parts/{part_id}/sections/{section_index}", dependencies=[Depends(supervisor_or_admin_dep)])
 def editor_save_section(part_id: str, section_index: int, req: EditorSaveRequest):
     cfg = load_config()
     root = Path(cfg.parts_root)
@@ -742,16 +742,17 @@ def editor_save_section(part_id: str, section_index: int, req: EditorSaveRequest
 
     payload = {
         "image": req.image or image_path.name,
-        "image_size": req.image_size or _read_image_size(image_path),
+        "image_size": req.image_size or read_image_size(image_path),
         "zones": cleaned_zones,
     }
 
     zones_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    invalidate_scan_cache()
 
     return {"ok": True}
 
 
-@app.post("/api/editor/parts/{part_id}/sections/{section_index}/import", dependencies=[Depends(admin_dep)])
+@app.post("/api/editor/parts/{part_id}/sections/{section_index}/import", dependencies=[Depends(supervisor_or_admin_dep)])
 def editor_import_overlay(part_id: str, section_index: int):
     cfg = load_config()
     root = Path(cfg.parts_root)
@@ -844,7 +845,7 @@ def save_last_state(part_id: str, req: SaveLastStateRequest):
     _save_last_state(part_id, payload)
     return {"ok": True}
 
-@app.post("/api/recipes/{part_id}/save", dependencies=[Depends(any_user_dep)])
+@app.post("/api/recipes/{part_id}/save", dependencies=[Depends(supervisor_or_admin_dep)])
 def save_recipe(part_id: str, req: SaveRecipeRequest, request: Request):
     existing = _load_recipe_list(part_id)
 
@@ -861,7 +862,7 @@ def save_recipe(part_id: str, req: SaveRecipeRequest, request: Request):
         "zones": req.zones,
         "created_by": _current_user_name(request),
         "created_by_role": _current_user_role(request),
-        "created_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
     existing.append(new_recipe)
@@ -902,8 +903,6 @@ def load_recipe(part_id: str, req: LoadRecipeRequest):
     if not is_connected():
         raise HTTPException(status_code=409, detail="OPC not connected")
 
-    from app.opc_service import write_paths
-
     write_paths(recipe.get("paths", []))
     write_zones(part_id, recipe.get("zones", {}))
     zone_ids = _zone_ids_from_zone_map(recipe.get("zones", {}))
@@ -912,7 +911,7 @@ def load_recipe(part_id: str, req: LoadRecipeRequest):
 
     return recipe
 
-@app.put("/api/admin/recipes/{part_id}/{recipe_id}", dependencies=[Depends(admin_dep)])
+@app.put("/api/admin/recipes/{part_id}/{recipe_id}", dependencies=[Depends(supervisor_or_admin_dep)])
 def update_recipe(part_id: str, recipe_id: int, req: UpdateRecipeRequest):
     recipes = _load_recipe_list(part_id)
 
@@ -933,7 +932,7 @@ def update_recipe(part_id: str, recipe_id: int, req: UpdateRecipeRequest):
     return {"ok": True, "recipe": updated_recipe}
 
 
-@app.delete("/api/admin/recipes/{part_id}/{recipe_id}", dependencies=[Depends(admin_dep)])
+@app.delete("/api/admin/recipes/{part_id}/{recipe_id}", dependencies=[Depends(supervisor_or_admin_dep)])
 def delete_recipe(part_id: str, recipe_id: int):
     recipes = _load_recipe_list(part_id)
     filtered = [r for r in recipes if not _recipe_id_matches(r, recipe_id)]
@@ -974,6 +973,26 @@ def opc_status():
         "table_orientation": orientation,
         "table_orientation_degrees": orientation_degrees,
     }
+
+
+@app.get("/api/opc/program-status", dependencies=[Depends(any_user_dep)])
+def opc_program_status():
+    return {"connected": is_connected(), **get_program_tags()}
+
+
+@app.get("/parts/{file_path:path}")
+def serve_part_file(file_path: str):
+    cfg = load_config()
+    parts_root = Path(cfg.parts_root).resolve()
+    requested = (parts_root / file_path).resolve()
+
+    if parts_root not in requested.parents and requested != parts_root:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not requested.exists() or not requested.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(requested)
 
 
 # Serve React production build (catch-all)

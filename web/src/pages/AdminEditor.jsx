@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useSession } from "../SessionContext.jsx";
 
 const ORIENTATION_OPTIONS = [
   { value: 1, label: "0°" },
@@ -20,6 +21,8 @@ export default function AdminEditor() {
   const { partId, sectionIndex } = useParams();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const sessionData = useSession();
+  const currentRole = sessionData?.authenticated ? sessionData.user?.role : null;
 
   const returnTarget = searchParams.get("return") || "grid";
 
@@ -183,16 +186,12 @@ export default function AdminEditor() {
 
     setLoading(true);
 
-    const statusRes = await fetch("/api/session");
-    const statusData = await statusRes.json();
-
-    if (!statusData.authenticated) {
+    if (!sessionData?.authenticated) {
       navigate("/login", { replace: true });
       return;
     }
 
-    const role = statusData.user?.role;
-    if (role !== "admin") {
+    if (currentRole !== "admin" && currentRole !== "supervisor") {
       navigate("/", { replace: true });
       return;
     }
@@ -254,7 +253,7 @@ export default function AdminEditor() {
 
   useEffect(() => {
     loadEditorSection();
-  }, [navigate, partId, sectionIndex, returnTarget]);
+  }, [navigate, partId, sectionIndex, returnTarget, sessionData, currentRole]);
 
   useEffect(() => {
     function handleBeforeUnload(e) {
