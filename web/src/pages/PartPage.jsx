@@ -2091,7 +2091,7 @@ function ProgramProgressCard({ paths, programProgress, opcConnected, style: extr
                   Step {displayStep}
                 </span>
                 <span style={{ fontSize: 18, fontWeight: 800, color: "#1e3a5f", lineHeight: 1 }}>
-                  {grit != null ? `G${grit}` : "—"}
+                  {stepIndex === 3 ? "Scotch" : grit != null ? `P${grit}` : "—"}
                 </span>
                 <span style={{ fontSize: 11, color: "#6b7280", lineHeight: 1, marginTop: 1 }}>
                   {passCount} / {totalPasses}

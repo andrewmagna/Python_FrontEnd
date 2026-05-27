@@ -96,7 +96,7 @@ def connect():
     _index_built = False
 
     try:
-        endpoint = "opc.tcp://192.168.1.246:4850/Magna_IOServer"
+        endpoint = "opc.tcp://127.0.0.1:4850/Magna_IOServer"
 
         client = Client(endpoint)
         client.set_user("")
