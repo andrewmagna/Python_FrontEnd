@@ -317,6 +317,10 @@ export default function PartPage() {
   useEffect(() => {
     if (!part) return;
     if (!opcStatusLoaded) return;
+    // Wait for orientation poll to return before restoring, otherwise we'd
+    // commit hasLoadedLastStateRef=true with effectiveOrientation=null and
+    // never correctly restore zones on page load.
+    if (opcConnected && effectiveOrientation === null && debugOrientationOverride === "live") return;
     if (hasLoadedLastStateRef.current) return;
 
     let cancelled = false;
