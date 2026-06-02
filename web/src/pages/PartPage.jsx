@@ -109,6 +109,12 @@ export default function PartPage() {
 
       setPart(data);
 
+      fetch("/api/active-part", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ part_id: data.part_id, display_name: data.display_name }),
+      }).catch(() => {});
+
       const z = {};
       for (let i = 1; i <= 40; i++) z[i] = false;
       setZoneState(z);

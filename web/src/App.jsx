@@ -7,6 +7,7 @@ import AdminEditor from "./pages/AdminEditor.jsx";
 import AppHeader from "./components/AppHeader.jsx";
 import AdminRecipes from "./pages/AdminRecipes.jsx";
 import AdminUsers from "./pages/AdminUsers.jsx";
+import SummaryPage from "./pages/SummaryPage.jsx";
 import { SessionContext } from "./SessionContext.jsx";
 
 function ProtectedRoute({ session, children }) {
@@ -148,6 +149,14 @@ export default function App() {
               element={
                 <ProtectedRoute session={session}>
                   <AdminUsers />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/summary"
+              element={
+                <ProtectedRoute session={session}>
+                  <SummaryPage />
                 </ProtectedRoute>
               }
             />

@@ -95,6 +95,31 @@ export default function AppHeader() {
             gap: 10,
           }}
         >
+          {session && (
+            <button
+              onClick={() => window.open("/summary", "_blank")}
+              title="Summary Display"
+              aria-label="Summary Display"
+              style={{
+                width: 40,
+                height: 40,
+                minWidth: 40,
+                minHeight: 40,
+                padding: 0,
+                borderRadius: 10,
+                border: "1px solid #e5e7eb",
+                background: "#ffffff",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                lineHeight: 1,
+              }}
+            >
+              <MonitorIcon />
+            </button>
+          )}
           {session && (session.role === "admin" || session.role === "supervisor") && (
             <button
               onClick={() => navigate("/admin/users?return=grid")}
@@ -164,6 +189,36 @@ export default function AppHeader() {
         </div>
       </div>
     </div>
+  );
+}
+
+function MonitorIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      style={{ display: "block" }}
+    >
+      <rect
+        x="2" y="3" width="20" height="14" rx="2"
+        fill="none"
+        stroke="#2563eb"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M8 21h8M12 17v4"
+        fill="none"
+        stroke="#2563eb"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 

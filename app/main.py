@@ -57,6 +57,9 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="ZoneSelect", lifespan=lifespan)
 
+_active_part_id: Optional[str] = None
+_active_part_display_name: Optional[str] = None
+
 if getattr(sys, "frozen", False):
     # Read-only bundled assets (web/dist) live in the temp extraction dir.
     # Mutable data lives next to the .exe so it persists across runs.
@@ -416,6 +419,19 @@ def write_paths_endpoint(req: WritePathsRequest):
     write_recipe_name("")
 
     return {"status": "ok"}
+
+@app.get("/api/active-part", dependencies=[Depends(any_user_dep)])
+def get_active_part():
+    return {"part_id": _active_part_id, "display_name": _active_part_display_name}
+
+
+@app.post("/api/active-part", dependencies=[Depends(any_user_dep)])
+def set_active_part(req: SelectPartRequest):
+    global _active_part_id, _active_part_display_name
+    _active_part_id = req.part_id
+    _active_part_display_name = req.display_name
+    return {"part_id": _active_part_id, "display_name": _active_part_display_name}
+
 
 @app.post("/api/opc/select-part", dependencies=[Depends(any_user_dep)])
 def select_part_endpoint(req: SelectPartRequest):
