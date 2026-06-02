@@ -66,6 +66,7 @@ export default function PartPage() {
   });
   const programStateRef = useRef({
     prevProgramStarted: false,
+    prevCycleStarted: false,
     prevCycleCompleted: false,
     stepIndex: 0,
     passCount: 0,
@@ -256,7 +257,7 @@ export default function PartPage() {
 
   useEffect(() => {
     if (!opcConnected) {
-      programStateRef.current = { prevProgramStarted: false, prevCycleCompleted: false, stepIndex: 0, passCount: 0 };
+      programStateRef.current = { prevProgramStarted: false, prevCycleStarted: false, prevCycleCompleted: false, stepIndex: 0, passCount: 0 };
       setProgramProgress({ running: false, stepIndex: 0, passCount: 0 });
       return;
     }
@@ -272,29 +273,36 @@ export default function PartPage() {
         const data = await res.json();
 
         const ps = !!data.program_started;
+        const cs = !!data.cycle_started;
         const cc = !!data.cycle_completed;
         const ref = programStateRef.current;
+        const activeSteps = (paths || []).filter((p) => (p.passes ?? 0) > 0);
 
         let { stepIndex, passCount } = ref;
-        let running = ps;
 
         if (ps && !ref.prevProgramStarted) {
+          // Program just started — reset
           stepIndex = 0;
           passCount = 0;
-        } else if (ps && cc && !ref.prevCycleCompleted) {
-          passCount += 1;
-          const activeSteps = (paths || []).filter((p) => (p.passes ?? 0) > 0);
-          const currentStep = activeSteps[stepIndex];
-          if (currentStep && passCount >= currentStep.passes) {
-            let next = stepIndex + 1;
-            while (next < activeSteps.length && (activeSteps[next].passes ?? 0) === 0) next++;
-            stepIndex = next < activeSteps.length ? next : stepIndex;
-            passCount = 0;
+        } else if (ps) {
+          // Cycle_Started rising edge — increment pass count immediately (bar fills as pass begins)
+          if (cs && !ref.prevCycleStarted) {
+            passCount += 1;
+          }
+          // Cycle_Completed rising edge — advance step if all passes done (bar was full, now move on)
+          if (cc && !ref.prevCycleCompleted) {
+            const currentStep = activeSteps[stepIndex];
+            if (currentStep && passCount >= currentStep.passes) {
+              let next = stepIndex + 1;
+              while (next < activeSteps.length && (activeSteps[next].passes ?? 0) === 0) next++;
+              stepIndex = next < activeSteps.length ? next : stepIndex;
+              passCount = 0;
+            }
           }
         }
 
-        programStateRef.current = { prevProgramStarted: ps, prevCycleCompleted: cc, stepIndex, passCount };
-        if (!cancelled) setProgramProgress({ running, stepIndex, passCount });
+        programStateRef.current = { prevProgramStarted: ps, prevCycleStarted: cs, prevCycleCompleted: cc, stepIndex, passCount };
+        if (!cancelled) setProgramProgress({ running: ps, stepIndex, passCount });
       } catch {
         // ignore
       }
