@@ -41,6 +41,8 @@ from app.opc_service import (
     write_shift_start_time,
     write_shift_end_time,
     write_shift_completed,
+    write_shift_started,
+    write_zone_section_toggle,
     get_program_tags,
 )
 from app.overlay_import import import_polygons_from_overlay
@@ -246,6 +248,12 @@ def admin_login(req: AdminLoginRequest, response: Response):
         except Exception as e:
             print("Failed writing Shift_Start_Time on admin login:", e)
 
+    if is_connected():
+        try:
+            write_shift_started(1)
+        except Exception as e:
+            print("Failed writing Shift_Started on admin login:", e)
+
     return {"ok": True}
 
 @app.post("/api/logout")
@@ -255,6 +263,11 @@ def logout(response: Response):
             write_shift_end_time(_now_shift_timestamp())
         except Exception as e:
             print("Failed writing Shift_End_Time on logout:", e)
+
+        try:
+            write_shift_started(0)
+        except Exception as e:
+            print("Failed writing Shift_Started on logout:", e)
 
         threading.Thread(target=_pulse_shift_completed_tag, daemon=True).start()
 
@@ -304,6 +317,12 @@ def login_rfid(req: RFIDLoginRequest, response: Response):
             write_shift_start_time(_now_shift_timestamp())
         except Exception as e:
             print("Failed writing Shift_Start_Time on RFID login:", e)
+
+    if is_connected():
+        try:
+            write_shift_started(1)
+        except Exception as e:
+            print("Failed writing Shift_Started on RFID login:", e)
 
     return {"ok": True, "user": session_payload}
 
@@ -405,6 +424,16 @@ def apply(req: ApplyRequest):
     write_recipe_name("")
     log_apply(req.part_id, req.zones)
 
+    return {"status": "ok"}
+
+
+@app.post("/api/opc/zone-section-toggle", dependencies=[Depends(any_user_dep)])
+def zone_section_toggle_endpoint(req: dict):
+    if not is_connected():
+        raise HTTPException(status_code=500, detail="OPC UA not connected")
+
+    value = bool(req.get("value", False))
+    write_zone_section_toggle(value)
     return {"status": "ok"}
 
 

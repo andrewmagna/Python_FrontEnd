@@ -1,5 +1,5 @@
 {
-  "part_id": "LH_Part",
+  "part_id": "Test_Part",
   "orientation": null,
   "zones": {
     "1": false,
@@ -65,5 +65,5 @@
     }
   ],
   "selected_recipe_id": null,
-  "saved_at": 1780668205720
+  "saved_at": 1780410898843
 }
