@@ -1,77 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-
-function getDefaultPaths() {
-  return [
-    { passes: 0, grit: 80, force: 10 },
-    { passes: 0, grit: 120, force: 10 },
-    { passes: 0, grit: 180, force: 10 },
-    { passes: 0, force: 10 },
-  ];
-}
-
-function normalizePaths(rawPaths) {
-  const defaults = getDefaultPaths();
-
-  if (!Array.isArray(rawPaths)) {
-    return defaults;
-  }
-
-  return defaults.map((defaultPath, index) => {
-    const raw = rawPaths[index] && typeof rawPaths[index] === "object" ? rawPaths[index] : {};
-
-    const next = {
-      ...defaultPath,
-      passes: Number.isFinite(Number(raw.passes))
-        ? Math.max(0, Math.trunc(Number(raw.passes)))
-        : defaultPath.passes,
-      force: Number.isFinite(Number(raw.force))
-        ? Math.max(0, Math.min(20, Number(raw.force)))
-        : defaultPath.force,
-    };
-
-    if (index < 3) {
-      const grit = Number(raw.grit);
-      next.grit = [80, 120, 180].includes(grit) ? grit : defaultPath.grit;
-    }
-
-    return next;
-  });
-}
-
-function createEmptyZoneMap() {
-  const next = {};
-  for (let i = 1; i <= 40; i++) next[i] = false;
-  return next;
-}
-
-function normalizeZones(rawZones) {
-  const zoneIds = [];
-
-  if (!rawZones || typeof rawZones !== "object") {
-    return zoneIds;
-  }
-
-  for (let i = 1; i <= 40; i++) {
-    if (rawZones[i] || rawZones[String(i)]) {
-      zoneIds.push(i);
-    }
-  }
-
-  return zoneIds;
-}
-
-function zoneIdsToMap(zoneIds) {
-  const zoneMap = createEmptyZoneMap();
-
-  for (const zoneId of zoneIds) {
-    if (Number.isInteger(zoneId) && zoneId >= 1 && zoneId <= 40) {
-      zoneMap[zoneId] = true;
-    }
-  }
-
-  return zoneMap;
-}
+import {
+  getDefaultPaths,
+  normalizePaths,
+  normalizeZoneIds as normalizeZones,
+  zoneIdsToMap,
+} from "../lib/recipes.js";
 
 function formatPath(path, index) {
   const label = `P${index + 1}`;
@@ -211,7 +145,7 @@ export default function AdminRecipes() {
 
       await loadRecipesPage();
       cancelEdit();
-    } catch {
+    } catch (e) {
       alert("Server error");
     } finally {
       setBusyId(null);

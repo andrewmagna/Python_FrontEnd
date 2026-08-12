@@ -1,11 +1,35 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import HTTPException, Request, Response
 from itsdangerous import BadSignature, URLSafeSerializer
 
-from app.config_store import load_config
+from app.config_store import load_config, users_file_path
 
 COOKIE_NAME = "zone_session"
+
+_users_cache: list | None = None
+_users_cache_mtime: float = -1.0
+
+
+def _load_users_for_validation() -> list:
+    global _users_cache, _users_cache_mtime
+    p = users_file_path()
+    try:
+        mtime = p.stat().st_mtime if p.exists() else -1.0
+    except OSError:
+        mtime = -1.0
+    if _users_cache is not None and mtime == _users_cache_mtime:
+        return _users_cache
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        result = data if isinstance(data, list) else []
+    except Exception:
+        result = []
+    _users_cache = result
+    _users_cache_mtime = mtime
+    return result
 
 
 def _serializer() -> URLSafeSerializer:
@@ -38,9 +62,24 @@ def get_session(request: Request) -> dict | None:
         return None
     try:
         data = _serializer().loads(token)
-        return data if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            return None
     except BadSignature:
         return None
+
+    # Validate operator/supervisor sessions against the current users file.
+    # Admin sessions have no user_id and are config-based — they pass through.
+    user_id = data.get("user_id")
+    if user_id is not None:
+        stored_role = data.get("role")
+        for user in _load_users_for_validation():
+            if user.get("id") == user_id:
+                if user.get("role") != stored_role:
+                    return None  # role changed
+                return data
+        return None  # user deleted
+
+    return data
 
 
 def is_authenticated(request: Request) -> bool:

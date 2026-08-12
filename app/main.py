@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import os
+import secrets
 import sys
 import threading
 import time
@@ -24,7 +28,7 @@ from app.admin_auth import (
     supervisor_or_admin_dep,
 )
 from app.audit import init_db, log_apply
-from app.config_store import AppConfig, load_config, save_config, validate_parts_root
+from app.config_store import AppConfig, load_config, save_config, validate_parts_root, users_file_path
 from app.opc_service import (
     connect,
     start_reconnect_loop,
@@ -46,14 +50,64 @@ from app.opc_service import (
     get_program_tags,
 )
 from app.overlay_import import import_polygons_from_overlay
-from app.parts_service import get_part, scan_parts, invalidate_scan_cache, read_image_size
+from app.parts_service import get_part, scan_parts, invalidate_scan_cache, read_image_size, _discover_existing_sections as _discover_sections_from_parts
+
+
+def _hash_password(password: str) -> tuple[str, str]:
+    salt = os.urandom(32).hex()
+    h = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 260000)
+    return h.hex(), salt
+
+
+def _verify_password(password: str, stored_hash: str, salt: str) -> bool:
+    h = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 260000)
+    return hmac.compare_digest(h.hex(), stored_hash)
+
+
+def _ensure_secret_key() -> None:
+    """Generate a strong random secret key if the default placeholder is in use."""
+    cfg = load_config()
+    if not cfg.secret_key or cfg.secret_key == "dev_secret_change_me":
+        new_key = secrets.token_urlsafe(32)
+        new_cfg = AppConfig(
+            parts_root=cfg.parts_root,
+            admin_username=cfg.admin_username,
+            admin_password=cfg.admin_password,
+            admin_password_hash=cfg.admin_password_hash,
+            admin_password_salt=cfg.admin_password_salt,
+            secret_key=new_key,
+            inactivity_timeout_minutes=cfg.inactivity_timeout_minutes,
+        )
+        save_config(new_cfg)
+        print("Generated new random secret_key in config.json")
+
+
+def _migrate_admin_password() -> None:
+    """Migrate plaintext admin_password to PBKDF2 hash on first run."""
+    cfg = load_config()
+    if cfg.admin_password and not cfg.admin_password_hash:
+        password_hash, salt = _hash_password(cfg.admin_password)
+        new_cfg = AppConfig(
+            parts_root=cfg.parts_root,
+            admin_username=cfg.admin_username,
+            admin_password="",
+            admin_password_hash=password_hash,
+            admin_password_salt=salt,
+            secret_key=cfg.secret_key,
+            inactivity_timeout_minutes=cfg.inactivity_timeout_minutes,
+        )
+        save_config(new_cfg)
+        print("Migrated admin password to hashed storage")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    _ensure_secret_key()
+    _migrate_admin_password()
     connect()
     start_reconnect_loop()
     init_db()
+    _load_persisted_active_part()
     yield
 
 
@@ -80,9 +134,11 @@ RECIPES_ROOT.mkdir(parents=True, exist_ok=True)
 LAST_STATE_ROOT = _DATA_ROOT / "data" / "last_state"
 LAST_STATE_ROOT.mkdir(parents=True, exist_ok=True)
 
+ACTIVE_PART_FILE = LAST_STATE_ROOT / "_active_part.json"
+
 USERS_ROOT = _DATA_ROOT / "data" / "users"
 USERS_ROOT.mkdir(parents=True, exist_ok=True)
-USERS_FILE = USERS_ROOT / "users.json"
+USERS_FILE = users_file_path()
 
 # On first run after install, seed persistent data from bundled defaults.
 if getattr(sys, "frozen", False):
@@ -177,15 +233,7 @@ class UserUpsertRequest(BaseModel):
     card_id: str
 
 def _discover_existing_sections(part_dir: Path) -> list[int]:
-    sections_dir = part_dir / "sections"
-    existing: list[int] = []
-
-    for i in range(1, 5):
-        clean_path = sections_dir / f"section{i}_clean.png"
-        if clean_path.exists():
-            existing.append(i)
-
-    return existing
+    return _discover_sections_from_parts(part_dir / "sections")
 
 
 def _ensure_existing_section(part_dir: Path, section_index: int) -> Path:
@@ -223,10 +271,18 @@ def admin_status(request: Request):
 def admin_login(req: AdminLoginRequest, response: Response):
     cfg = load_config()
     expected_username = getattr(cfg, "admin_username", "admin")
-    expected_password = getattr(cfg, "admin_password", "change_me")
 
-    if req.username != expected_username or req.password != expected_password:
+    if req.username != expected_username:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if cfg.admin_password_hash and cfg.admin_password_salt:
+        if not _verify_password(req.password, cfg.admin_password_hash, cfg.admin_password_salt):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+    else:
+        # Fallback for first-run before migration completes; reject blank stored password
+        expected_password = getattr(cfg, "admin_password", "")
+        if not expected_password or req.password != expected_password:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
 
     set_session_cookie(
         response,
@@ -397,6 +453,8 @@ def set_config(req: ConfigUpdateRequest) -> ConfigResponse:
         parts_root=req.parts_root,
         admin_username=existing.admin_username,
         admin_password=existing.admin_password,
+        admin_password_hash=existing.admin_password_hash,
+        admin_password_salt=existing.admin_password_salt,
         secret_key=existing.secret_key,
         inactivity_timeout_minutes=existing.inactivity_timeout_minutes,
     )
@@ -449,6 +507,26 @@ def write_paths_endpoint(req: WritePathsRequest):
 
     return {"status": "ok"}
 
+def _load_persisted_active_part() -> None:
+    global _active_part_id, _active_part_display_name
+    try:
+        data = json.loads(ACTIVE_PART_FILE.read_text(encoding="utf-8"))
+        _active_part_id = data.get("part_id") or None
+        _active_part_display_name = data.get("display_name") or None
+    except Exception:
+        pass
+
+
+def _persist_active_part() -> None:
+    try:
+        ACTIVE_PART_FILE.write_text(
+            json.dumps({"part_id": _active_part_id, "display_name": _active_part_display_name}, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"Failed persisting active part: {e}")
+
+
 @app.get("/api/active-part", dependencies=[Depends(any_user_dep)])
 def get_active_part():
     return {"part_id": _active_part_id, "display_name": _active_part_display_name}
@@ -459,6 +537,7 @@ def set_active_part(req: SelectPartRequest):
     global _active_part_id, _active_part_display_name
     _active_part_id = req.part_id
     _active_part_display_name = req.display_name
+    _persist_active_part()
     return {"part_id": _active_part_id, "display_name": _active_part_display_name}
 
 
@@ -907,8 +986,25 @@ def save_last_state(part_id: str, req: SaveLastStateRequest):
     _save_last_state(part_id, payload)
     return {"ok": True}
 
+def _validate_recipe_zones(part_id: str, zones: dict) -> None:
+    """Raise HTTP 400 if zones contains IDs not present in any section of the part."""
+    cfg = load_config()
+    part_dir = Path(cfg.parts_root) / part_id
+    if part_dir.exists():
+        usage = collect_part_zone_ids(part_dir)
+        valid_ids = set(usage["used_ids"])
+        recipe_zone_ids = [i for i in range(1, 41) if zones.get(i) or zones.get(str(i))]
+        invalid = sorted(z for z in recipe_zone_ids if z not in valid_ids)
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Zone IDs not valid for part '{part_id}': {invalid}",
+            )
+
+
 @app.post("/api/recipes/{part_id}/save", dependencies=[Depends(supervisor_or_admin_dep)])
 def save_recipe(part_id: str, req: SaveRecipeRequest, request: Request):
+    _validate_recipe_zones(part_id, req.zones)
     existing = _load_recipe_list(part_id)
 
     next_id = max(
@@ -975,6 +1071,7 @@ def load_recipe(part_id: str, req: LoadRecipeRequest):
 
 @app.put("/api/admin/recipes/{part_id}/{recipe_id}", dependencies=[Depends(supervisor_or_admin_dep)])
 def update_recipe(part_id: str, recipe_id: int, req: UpdateRecipeRequest):
+    _validate_recipe_zones(part_id, req.zones)
     recipes = _load_recipe_list(part_id)
 
     updated_recipe = None

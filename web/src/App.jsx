@@ -51,7 +51,8 @@ export default function App() {
   }, [location.pathname]);
 
   useEffect(() => {
-    if (!session.authenticated) return;
+    // The summary window is a passive display — never trigger inactivity logout there.
+    if (!session.authenticated || location.pathname === "/summary") return;
 
     let timeoutId;
     const timeoutMs = (session.inactivity_timeout_minutes ?? 15) * 60 * 1000;
@@ -154,11 +155,7 @@ export default function App() {
             />
             <Route
               path="/summary"
-              element={
-                <ProtectedRoute session={session}>
-                  <SummaryPage />
-                </ProtectedRoute>
-              }
+              element={<SummaryPage />}
             />
             <Route path="*" element={<Navigate to={session.authenticated ? "/" : "/login"} replace />} />
           </Routes>

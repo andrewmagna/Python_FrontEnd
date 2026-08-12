@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useSession } from "../SessionContext.jsx";
+import { useProgramProgress } from "../hooks/useProgramProgress.js";
+import {
+  getDefaultPaths,
+  normalizePaths,
+  createEmptyZoneState,
+  normalizeZoneMap,
+  getActivePathIndex,
+} from "../lib/recipes.js";
 
 const ORIENTATION_LABELS = {
   1: "0°",
@@ -10,15 +18,6 @@ const ORIENTATION_LABELS = {
 };
 
 const HEADER_HEIGHT = 96;
-
-function getDefaultPaths() {
-  return [
-    { passes: 0, grit: 80, force: 10 },
-    { passes: 0, grit: 120, force: 10 },
-    { passes: 0, grit: 180, force: 10 },
-    { passes: 0, force: 10 },
-  ];
-}
 
 export default function PartPage() {
   const { partId } = useParams();
@@ -56,21 +55,23 @@ export default function PartPage() {
   const saveLastStateTimeoutRef = useRef(null);
   const hasLoadedLastStateRef = useRef(false);
   const isRestoringLastStateRef = useRef(false);
+  const zoneStateRef = useRef({});
 
   const [sectionToggle, setSectionToggle] = useState(false);
 
-  const [programProgress, setProgramProgress] = useState({
-    running: false,
-    stepIndex: 0,
-    passCount: 0,
-  });
-  const programStateRef = useRef({
-    prevProgramStarted: false,
-    prevCycleStarted: false,
-    prevCycleCompleted: false,
-    stepIndex: 0,
-    passCount: 0,
-  });
+  const pathsRef = useRef(getDefaultPaths());
+
+  // Keep pathsRef in sync so useProgramProgress always reads the latest paths
+  useEffect(() => {
+    pathsRef.current = paths;
+  }, [paths]);
+
+  // Keep zoneStateRef in sync for the orientation-clear effect (reads without re-triggering it)
+  useEffect(() => {
+    zoneStateRef.current = zoneState;
+  }, [zoneState]);
+
+  const programProgress = useProgramProgress(opcConnected, pathsRef);
 
   async function refreshRecipes() {
     try {
@@ -261,63 +262,6 @@ export default function PartPage() {
     };
   }, [opcConnected]);
 
-  useEffect(() => {
-    if (!opcConnected) {
-      programStateRef.current = { prevProgramStarted: false, prevCycleStarted: false, prevCycleCompleted: false, stepIndex: 0, passCount: 0 };
-      setProgramProgress({ running: false, stepIndex: 0, passCount: 0 });
-      return;
-    }
-
-    let cancelled = false;
-
-    async function pollProgram() {
-      try {
-        const res = await fetch(`/api/opc/program-status?t=${Date.now()}`, {
-          cache: "no-store",
-        });
-        if (!res.ok || cancelled) return;
-        const data = await res.json();
-
-        const ps = !!data.program_started;
-        const cs = !!data.cycle_started;
-        const cc = !!data.cycle_completed;
-        const ref = programStateRef.current;
-        const activeSteps = (paths || []).filter((p) => (p.passes ?? 0) > 0);
-
-        let { stepIndex, passCount } = ref;
-
-        if (ps && !ref.prevProgramStarted) {
-          // Program just started — reset
-          stepIndex = 0;
-          passCount = 0;
-        } else if (ps) {
-          // Cycle_Started rising edge — increment pass count immediately (bar fills as pass begins)
-          if (cs && !ref.prevCycleStarted) {
-            passCount += 1;
-          }
-          // Cycle_Completed rising edge — advance step if all passes done (bar was full, now move on)
-          if (cc && !ref.prevCycleCompleted) {
-            const currentStep = activeSteps[stepIndex];
-            if (currentStep && passCount >= currentStep.passes) {
-              let next = stepIndex + 1;
-              while (next < activeSteps.length && (activeSteps[next].passes ?? 0) === 0) next++;
-              stepIndex = next < activeSteps.length ? next : stepIndex;
-              passCount = 0;
-            }
-          }
-        }
-
-        programStateRef.current = { prevProgramStarted: ps, prevCycleStarted: cs, prevCycleCompleted: cc, stepIndex, passCount };
-        if (!cancelled) setProgramProgress({ running: ps, stepIndex, passCount });
-      } catch {
-        // ignore
-      }
-    }
-
-    pollProgram();
-    const t = setInterval(pollProgram, 100);
-    return () => { cancelled = true; clearInterval(t); };
-  }, [opcConnected, paths]);
 
   const effectiveOrientation =
     debugOrientationOverride === "live"
@@ -501,57 +445,8 @@ export default function PartPage() {
     });
   }
 
-  function createEmptyZoneState() {
-    const next = {};
-    for (let i = 1; i <= 40; i++) next[i] = false;
-    return next;
-  }
-
-  function normalizeRecipePaths(rawPaths) {
-    const defaults = getDefaultPaths();
-
-    if (!Array.isArray(rawPaths)) {
-      return defaults;
-    }
-
-    return defaults.map((defaultPath, index) => {
-      const raw =
-        rawPaths[index] && typeof rawPaths[index] === "object"
-          ? rawPaths[index]
-          : {};
-
-      const next = {
-        ...defaultPath,
-        passes: Number.isFinite(Number(raw.passes))
-          ? Math.max(0, Math.trunc(Number(raw.passes)))
-          : defaultPath.passes,
-        force: Number.isFinite(Number(raw.force))
-          ? Math.max(0, Math.min(20, Number(raw.force)))
-          : defaultPath.force,
-      };
-
-      if (index < 3) {
-        const grit = Number(raw.grit);
-        next.grit = [80, 120, 180].includes(grit) ? grit : defaultPath.grit;
-      }
-
-      return next;
-    });
-  }
-
-  function normalizeRecipeZones(rawZones) {
-    const next = createEmptyZoneState();
-
-    if (!rawZones || typeof rawZones !== "object") {
-      return next;
-    }
-
-    for (let i = 1; i <= 40; i++) {
-      next[i] = !!(rawZones[i] || rawZones[String(i)]);
-    }
-
-    return next;
-  }
+  const normalizeRecipePaths = normalizePaths;
+  const normalizeRecipeZones = normalizeZoneMap;
 
   function getSelectedZoneIdsFromMap(zones) {
     const ids = [];
@@ -800,20 +695,33 @@ export default function PartPage() {
   }, [part, effectiveOrientation]);
 
   useEffect(() => {
-    setZoneState((prev) => {
-      const next = { ...prev };
-      let changed = false;
+    const prev = zoneStateRef.current;
+    const next = { ...prev };
+    let changed = false;
 
-      for (const key of Object.keys(next)) {
-        const zoneId = Number(key);
-        if (next[key] && !validZoneIds.has(zoneId)) {
-          next[key] = false;
-          changed = true;
-        }
+    for (const key of Object.keys(next)) {
+      const zoneId = Number(key);
+      if (next[key] && !validZoneIds.has(zoneId)) {
+        next[key] = false;
+        changed = true;
       }
+    }
 
-      return changed ? next : prev;
-    });
+    if (!changed) return;
+
+    setZoneState(next);
+
+    if (
+      hasLoadedLastStateRef.current &&
+      !isRestoringLastStateRef.current &&
+      opcConnected
+    ) {
+      fetch("/api/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ part_id: partId, zones: next }),
+      }).catch(() => {});
+    }
   }, [validZoneIds]);
 
   function isZoneAvailable(zone) {
@@ -2013,6 +1921,7 @@ function ProgramProgressCard({ paths, programProgress, opcConnected, style: extr
   const totalPasses = currentStep?.passes ?? 0;
   const grit = currentStep?.grit ?? null;
   const displayStep = running ? stepIndex + 1 : null;
+  const activePathIndex = running ? getActivePathIndex(paths, stepIndex) : -1;
 
   const vbSize = 120;
   const strokeWidth = 10;
@@ -2074,7 +1983,7 @@ function ProgramProgressCard({ paths, programProgress, opcConnected, style: extr
                   Step {displayStep}
                 </span>
                 <span style={{ fontSize: 18, fontWeight: 800, color: "#1e3a5f", lineHeight: 1 }}>
-                  {stepIndex === 3 ? "Scotch" : grit != null ? `P${grit}` : "—"}
+                  {activePathIndex === 3 ? "Scotch" : grit != null ? `P${grit}` : "—"}
                 </span>
                 <span style={{ fontSize: 11, color: "#6b7280", lineHeight: 1, marginTop: 1 }}>
                   {passCount} / {totalPasses}

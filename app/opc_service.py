@@ -59,7 +59,7 @@ def _post_connect_setup() -> None:
 
 
 def connect():
-    global client, connected, _objects_node, _orientation_node, _part_name_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _shift_started_node, _zone_section_toggle_node, _force_reading_node, _opc_status_node, _path_pass_nodes, _path_grit_nodes, _path_force_nodes, _zone_command_nodes, _logged_missing_nodes, _browse_name_index, _index_built
+    global client, connected, _objects_node, _orientation_node, _part_name_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _shift_started_node, _zone_section_toggle_node, _force_reading_node, _program_started_node, _cycle_started_node, _cycle_completed_node, _opc_status_node, _path_pass_nodes, _path_grit_nodes, _path_force_nodes, _zone_command_nodes, _logged_missing_nodes, _browse_name_index, _index_built
 
     load_config()
 
@@ -574,12 +574,7 @@ def write_zones(part_id, zones):
     if nodes_to_write:
         client.set_values(nodes_to_write, values_to_write)
 
-    part_node = _get_cached_node("part_name", "part_name")
-    if part_node is None:
-        print("Skipping missing OPC node: part_name")
-        return
-
-    _set_node_value(part_node, part_id.replace("_", " "), "part_name")
+    write_part_name(part_id.replace("_", " "))
 
 
 def write_paths(paths):
@@ -751,11 +746,26 @@ def write_zone_section_toggle(value: bool):
 _reconnect_stop = threading.Event()
 
 
+def _keepalive() -> None:
+    """Verify OPC session is still alive with a cheap server read.
+    Marks connected=False if the call fails so the reconnect loop can take over."""
+    global connected
+    if not is_connected():
+        return
+    try:
+        client.get_namespace_array()
+    except Exception as e:
+        print(f"OPC keepalive failed, marking disconnected: {e}")
+        connected = False
+
+
 def _reconnect_worker():
     while not _reconnect_stop.wait(10):
         if not is_connected():
             print("OPC reconnect attempt...")
             connect()
+        else:
+            _keepalive()
 
 
 def start_reconnect_loop():
