@@ -31,6 +31,7 @@ _path_grit_nodes = {}
 _path_force_nodes = {}
 _zone_command_nodes = {}
 _logged_missing_nodes = set()
+_logged_unrecognized_bool = set()
 
 _browse_name_index = {}
 _index_built = False
@@ -96,6 +97,7 @@ def connect():
     _path_force_nodes = {}
     _zone_command_nodes = {}
     _logged_missing_nodes = set()
+    _logged_unrecognized_bool = set()
     _browse_name_index = {}
     _index_built = False
 
@@ -172,6 +174,31 @@ def _safe_float(value, default=None):
         return float(value)
     except Exception:
         return default
+
+
+def _coerce_bool(value, tag_name: str = "") -> bool:
+    """Coerce an OPC value of unknown type to a real boolean.
+    Strings like '0', 'false', 'off', '' must NOT read as True."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("", "0", "false", "off", "no", "none", "null"):
+            return False
+        if s in ("1", "true", "on", "yes"):
+            return True
+        try:
+            return float(s) != 0
+        except ValueError:
+            if tag_name and tag_name not in _logged_unrecognized_bool:
+                _logged_unrecognized_bool.add(tag_name)
+                print(f"OPC warning: unrecognized boolean string for {tag_name!r}: {value!r}, treating as False")
+            return False
+    return bool(value)
 
 
 def _log_missing_node_once(node_name: str):
@@ -443,7 +470,7 @@ def get_program_tags() -> dict:
         values = client.get_values([n for _, n in nodes])
         result = dict(_default)
         for (key, _), val in zip(nodes, values):
-            result[key] = bool(val)
+            result[key] = _coerce_bool(val, key)
         return result
 
     except Exception as e:

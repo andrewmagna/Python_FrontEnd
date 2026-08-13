@@ -63,6 +63,8 @@ export default function SummaryPage() {
 
   const pathsRef = useRef(getDefaultPaths());
   const rightColRef = useRef(null);
+  const ringTitleRef = useRef(null);
+  const ringPillRef = useRef(null);
   const [ringSize, setRingSize] = useState(200);
 
   // Keep pathsRef in sync so the progress hook always reads the latest paths
@@ -70,15 +72,24 @@ export default function SummaryPage() {
     pathsRef.current = paths;
   }, [paths]);
 
-  // Ring sizing via ResizeObserver on the right column container
+  // Ring sizing via ResizeObserver on the right column container.
+  // Deps include sessionLoaded+authenticated so the effect re-runs once the
+  // live layout renders (rightColRef is null during standby/loading).
   useEffect(() => {
+    if (!sessionLoaded || !authenticated) return;
     const el = rightColRef.current;
     if (!el) return;
 
     function update() {
       const b = el.getBoundingClientRect();
-      // Leave room for the card title (~40px) and status pill (~60px) + padding
-      const available = Math.min(b.width - 40, b.height - 120);
+      const titleH = ringTitleRef.current
+        ? ringTitleRef.current.getBoundingClientRect().height + 16
+        : 40;
+      const pillH = ringPillRef.current
+        ? ringPillRef.current.getBoundingClientRect().height + 16
+        : 60;
+      const vertPad = 32;
+      const available = Math.min(b.width - 36, b.height - vertPad - titleH - pillH);
       setRingSize(Math.max(120, available));
     }
 
@@ -86,7 +97,7 @@ export default function SummaryPage() {
     const obs = new ResizeObserver(update);
     obs.observe(el);
     return () => obs.disconnect();
-  }, []);
+  }, [sessionLoaded, authenticated]);
 
   // Session poll every 2.5 s — drives the standby / live toggle
   useEffect(() => {
@@ -322,7 +333,7 @@ export default function SummaryPage() {
       >
         <div
           style={{
-            fontSize: "clamp(18px, 3.5vh, 52px)",
+            fontSize: "clamp(16px, 3vh, 48px)",
             fontWeight: 800,
             color: "#111827",
             lineHeight: 1,
@@ -330,29 +341,23 @@ export default function SummaryPage() {
         >
           {activePart?.display_name ?? "No part selected"}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1 }}>
           <span
             style={{
-              fontSize: "clamp(10px, 1.4vh, 20px)",
+              fontSize: "clamp(12px, 1.8vh, 22px)",
               fontWeight: 600,
               color: "#6b7280",
+              marginBottom: 2,
             }}
           >
             Table Orientation
           </span>
           <span
             style={{
-              fontSize: "clamp(14px, 2.2vh, 32px)",
+              fontSize: "clamp(28px, 6vh, 72px)",
               fontWeight: 800,
-              color:
-                opcConnected && tableOrientation ? "#1f2937" : "#9ca3af",
-              background:
-                opcConnected && tableOrientation ? "#f3f4f6" : "#f9fafb",
-              border: "1px solid #e5e7eb",
-              borderRadius: 10,
-              padding: "6px 16px",
-              minWidth: 64,
-              textAlign: "center",
+              color: opcConnected && tableOrientation ? "#1f2937" : "#9ca3af",
+              lineHeight: 1,
             }}
           >
             {opcConnected ? orientationText : "—"}
@@ -563,6 +568,7 @@ export default function SummaryPage() {
           }}
         >
           <div
+            ref={ringTitleRef}
             style={{
               fontSize: "clamp(12px, 1.6vh, 24px)",
               fontWeight: 700,
@@ -674,6 +680,7 @@ export default function SummaryPage() {
           </div>
 
           <div
+            ref={ringPillRef}
             style={{
               marginTop: 16,
               fontSize: "clamp(12px, 1.6vh, 22px)",
