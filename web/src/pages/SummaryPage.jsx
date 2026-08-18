@@ -66,6 +66,8 @@ export default function SummaryPage() {
   const ringTitleRef = useRef(null);
   const ringPillRef = useRef(null);
   const [ringSize, setRingSize] = useState(200);
+  const cardsContainerRef = useRef(null);
+  const [cardH, setCardH] = useState(120);
 
   // Keep pathsRef in sync so the progress hook always reads the latest paths
   useEffect(() => {
@@ -91,6 +93,24 @@ export default function SummaryPage() {
       const vertPad = 32;
       const available = Math.min(b.width - 36, b.height - vertPad - titleH - pillH);
       setRingSize(Math.max(120, available));
+    }
+
+    update();
+    const obs = new ResizeObserver(update);
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [sessionLoaded, authenticated]);
+
+  // Card height measurement — drives font sizes inside each recipe card
+  useEffect(() => {
+    if (!sessionLoaded || !authenticated) return;
+    const el = cardsContainerRef.current;
+    if (!el) return;
+
+    function update() {
+      const { height } = el.getBoundingClientRect();
+      // 4 cards separated by 3 gaps of 8px
+      setCardH(Math.max(60, (height - 24) / 4));
     }
 
     update();
@@ -299,6 +319,13 @@ export default function SummaryPage() {
   const totalPasses = currentActiveStep?.passes ?? 0;
   const progress = totalPasses > 0 ? Math.min(passCount / totalPasses, 1) : 0;
 
+  // Card font sizes — derived from measured card height so they fill the card
+  const cardLabelSize = Math.max(16, Math.min(cardH * 0.22, 44));
+  const cardNumSize   = Math.max(22, Math.min(cardH * 0.46, 86));
+  const cardCaptSize  = Math.max(10, Math.min(cardH * 0.12, 22));
+  const cardUnitSize  = Math.max(10, Math.min(cardH * 0.16, 30));
+  const cardPad       = Math.max(8,  Math.min(cardH * 0.08, 18));
+
   // Ring SVG geometry — viewBox stays fixed so stroke math is correct
   const vbSize = 220;
   const strokeWidth = 16;
@@ -399,6 +426,7 @@ export default function SummaryPage() {
             Recipe Setup
           </div>
           <div
+            ref={cardsContainerRef}
             style={{
               flex: 1,
               minHeight: 0,
@@ -421,8 +449,7 @@ export default function SummaryPage() {
                       ? "2px solid #2563eb"
                       : "1px solid #e5e7eb",
                     borderRadius: 12,
-                    padding:
-                      "clamp(6px, 1vh, 14px) clamp(8px, 1.2vh, 16px)",
+                    padding: `${cardPad}px ${cardPad * 1.2}px`,
                     background: isActive
                       ? "#eff6ff"
                       : isInactive
@@ -432,46 +459,52 @@ export default function SummaryPage() {
                     flex: 1,
                     display: "flex",
                     flexDirection: "column",
-                    justifyContent: "center",
+                    justifyContent: "space-between",
                     transition: "border-color 0.15s, background 0.15s",
                     minHeight: 0,
+                    overflow: "hidden",
                   }}
                 >
+                  {/* Step label — top, left-aligned */}
                   <div
                     style={{
-                      fontSize: "clamp(11px, 1.5vh, 22px)",
+                      fontSize: cardLabelSize,
                       fontWeight: 700,
                       color: isActive
                         ? "#1d4ed8"
                         : isInactive
                           ? "#9ca3af"
                           : "#111827",
-                      marginBottom: "clamp(4px, 0.6vh, 10px)",
+                      lineHeight: 1,
                     }}
                   >
                     {label}
                   </div>
+
+                  {/* Stat blocks — spread full card width */}
                   <div
                     style={{
                       display: "flex",
-                      gap: "clamp(12px, 2vh, 32px)",
-                      flexWrap: "wrap",
+                      justifyContent: "space-between",
+                      alignItems: "flex-end",
+                      width: "100%",
                     }}
                   >
                     <div>
                       <div
                         style={{
-                          fontSize: "clamp(9px, 1vh, 14px)",
+                          fontSize: cardCaptSize,
                           fontWeight: 600,
                           color: "#6b7280",
                           marginBottom: 2,
+                          letterSpacing: "0.05em",
                         }}
                       >
                         PASSES
                       </div>
                       <div
                         style={{
-                          fontSize: "clamp(14px, 2.5vh, 40px)",
+                          fontSize: cardNumSize,
                           fontWeight: 800,
                           color: isInactive ? "#d1d5db" : "#111827",
                           lineHeight: 1,
@@ -483,17 +516,18 @@ export default function SummaryPage() {
                     <div>
                       <div
                         style={{
-                          fontSize: "clamp(9px, 1vh, 14px)",
+                          fontSize: cardCaptSize,
                           fontWeight: 600,
                           color: "#6b7280",
                           marginBottom: 2,
+                          letterSpacing: "0.05em",
                         }}
                       >
                         FORCE
                       </div>
                       <div
                         style={{
-                          fontSize: "clamp(14px, 2.5vh, 40px)",
+                          fontSize: cardNumSize,
                           fontWeight: 800,
                           color: isInactive ? "#d1d5db" : "#111827",
                           lineHeight: 1,
@@ -502,30 +536,30 @@ export default function SummaryPage() {
                         {p.force ?? 10}
                         <span
                           style={{
-                            fontSize: "clamp(10px, 1.2vh, 18px)",
+                            fontSize: cardUnitSize,
                             fontWeight: 600,
                           }}
                         >
-                          {" "}
-                          N
+                          {" "}N
                         </span>
                       </div>
                     </div>
-                    {isActive && (
+                    {isActive ? (
                       <div>
                         <div
                           style={{
-                            fontSize: "clamp(9px, 1vh, 14px)",
+                            fontSize: cardCaptSize,
                             fontWeight: 600,
                             color: "#6b7280",
                             marginBottom: 2,
+                            letterSpacing: "0.05em",
                           }}
                         >
                           PROGRESS
                         </div>
                         <div
                           style={{
-                            fontSize: "clamp(14px, 2.5vh, 40px)",
+                            fontSize: cardNumSize,
                             fontWeight: 800,
                             color: "#2563eb",
                             lineHeight: 1,
@@ -534,15 +568,20 @@ export default function SummaryPage() {
                           {passCount}
                           <span
                             style={{
-                              fontSize: "clamp(10px, 1.2vh, 18px)",
+                              fontSize: cardUnitSize,
                               fontWeight: 600,
                               color: "#6b7280",
                             }}
                           >
-                            {" "}
-                            / {totalPasses}
+                            {" "}/ {totalPasses}
                           </span>
                         </div>
+                      </div>
+                    ) : (
+                      /* placeholder keeps PASSES and FORCE from shifting when PROGRESS appears */
+                      <div style={{ visibility: "hidden" }}>
+                        <div style={{ fontSize: cardCaptSize, marginBottom: 2 }}>PROGRESS</div>
+                        <div style={{ fontSize: cardNumSize, lineHeight: 1 }}>0</div>
                       </div>
                     )}
                   </div>

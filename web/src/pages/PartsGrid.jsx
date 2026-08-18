@@ -119,7 +119,7 @@ export default function PartsGrid() {
             fontSize: 15,
           }}
         >
-          No parts found. Make sure the parts directory is configured and contains at least one part folder with a thumb.png.
+          No parts found. Make sure the parts directory is configured and contains at least one part folder with a part.png.
         </div>
       ) : (
         <div
@@ -188,7 +188,7 @@ export default function PartsGrid() {
                   }}
                 >
                   <img
-                    src={p.thumb_url}
+                    src={p.image_url}
                     alt={p.display_name}
                     style={{
                       maxWidth: "100%",
@@ -221,18 +221,6 @@ export default function PartsGrid() {
                       flexWrap: "wrap",
                     }}
                   >
-                    <span
-                      style={{
-                        background: "#f3f4f6",
-                        borderRadius: 999,
-                        padding: "4px 8px",
-                        fontWeight: 600,
-                      }}
-                    >
-                      {p.section_count} section
-                      {p.section_count === 1 ? "" : "s"}
-                    </span>
-
                     <span
                       style={{
                         background: isConfigured ? "#dcfce7" : "#fef3c7",

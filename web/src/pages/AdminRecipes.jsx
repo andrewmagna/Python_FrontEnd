@@ -30,6 +30,8 @@ export default function AdminRecipes() {
   const [editDescription, setEditDescription] = useState("");
   const [editPaths, setEditPaths] = useState(getDefaultPaths());
   const [editZones, setEditZones] = useState([]);
+  const [editSections, setEditSections] = useState([]);
+  const [partSections, setPartSections] = useState([]);
 
   async function loadRecipesPage() {
     setLoading(true);
@@ -53,6 +55,12 @@ export default function AdminRecipes() {
     const res = await fetch(`/api/recipes/${partId}`);
     const data = res.ok ? await res.json() : [];
     setRecipes(Array.isArray(data) ? data : []);
+
+    // D11: fetch part sections to resolve names
+    const partRes = await fetch(`/api/parts/${partId}`);
+    const partData = partRes.ok ? await partRes.json() : {};
+    setPartSections(Array.isArray(partData.sections) ? partData.sections : []);
+
     setLoading(false);
   }
 
@@ -66,7 +74,7 @@ export default function AdminRecipes() {
       return;
     }
 
-    navigate(`/admin/editor/${partId}/1?return=${returnTarget}`);
+    navigate(`/admin/editor/${partId}?return=${returnTarget}`);
   }
 
   function beginEdit(recipe) {
@@ -75,6 +83,7 @@ export default function AdminRecipes() {
     setEditDescription(recipe.description || "");
     setEditPaths(normalizePaths(recipe.paths));
     setEditZones(normalizeZones(recipe.zones));
+    setEditSections(Array.isArray(recipe.sections) ? recipe.sections.filter(s => s >= 1 && s <= 5) : []);
   }
 
   function cancelEdit() {
@@ -83,6 +92,7 @@ export default function AdminRecipes() {
     setEditDescription("");
     setEditPaths(getDefaultPaths());
     setEditZones([]);
+    setEditSections([]);
   }
 
   function updateEditPath(index, field, value) {
@@ -107,7 +117,7 @@ export default function AdminRecipes() {
     const parsed = rawValue
       .split(",")
       .map((v) => Number(v.trim()))
-      .filter((v) => Number.isInteger(v) && v >= 1 && v <= 40);
+      .filter((v) => Number.isInteger(v) && v >= 1 && v <= 35);
 
     const deduped = [...new Set(parsed)].sort((a, b) => a - b);
     setEditZones(deduped);
@@ -134,6 +144,7 @@ export default function AdminRecipes() {
           description: editDescription.trim(),
           paths: editPaths,
           zones: zoneIdsToMap(editZones),
+          sections: editSections,
         }),
       });
 
@@ -186,6 +197,9 @@ export default function AdminRecipes() {
       ...recipe,
       normalizedPaths: normalizePaths(recipe.paths),
       normalizedZones: normalizeZones(recipe.zones),
+      normalizedSections: Array.isArray(recipe.sections)
+        ? recipe.sections.filter((s) => s >= 1 && s <= 5).sort((a, b) => a - b)
+        : [],
     }));
   }, [recipes]);
 
@@ -232,11 +246,11 @@ export default function AdminRecipes() {
           overflow: "auto",
         }}
       >
-        <div style={{ minWidth: 1380 }}>
+        <div style={{ minWidth: 1520 }}>
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "180px 220px 170px 420px 250px 140px",
+              gridTemplateColumns: "180px 220px 170px 420px 200px 130px 140px",
               borderBottom: "1px solid #e5e7eb",
               alignItems: "start",
             }}
@@ -246,6 +260,7 @@ export default function AdminRecipes() {
             <div style={{ padding: 12 }}>Created By</div>
             <div style={{ padding: 12 }}>Paths</div>
             <div style={{ padding: 12 }}>Zones</div>
+            <div style={{ padding: 12 }}>Sections</div>
             <div style={{ padding: 12 }}>Actions</div>
           </div>
 
@@ -262,7 +277,7 @@ export default function AdminRecipes() {
                   key={recipe.id}
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "180px 220px 170px 420px 250px 140px",
+                    gridTemplateColumns: "180px 220px 170px 420px 200px 130px 140px",
                     borderBottom: "1px solid #e5e7eb",
                     alignItems: "start",
                   }}
@@ -418,6 +433,45 @@ export default function AdminRecipes() {
                         {recipe.normalizedZones.length > 0
                           ? recipe.normalizedZones.join(", ")
                           : "No zones"}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ padding: 12 }}>
+                    {isEditing ? (
+                      <div style={{ display: "grid", gap: 4 }}>
+                        {partSections.length > 0 ? (
+                          partSections
+                            .slice()
+                            .sort((a, b) => a.slot - b.slot)
+                            .map((ps) => (
+                              <label key={ps.slot} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                                <input
+                                  type="checkbox"
+                                  checked={editSections.includes(ps.slot)}
+                                  onChange={(e) => {
+                                    setEditSections((prev) =>
+                                      e.target.checked
+                                        ? [...prev, ps.slot].sort((a, b) => a - b)
+                                        : prev.filter((s) => s !== ps.slot),
+                                    );
+                                  }}
+                                />
+                                {ps.name || `Section ${ps.slot}`}
+                              </label>
+                            ))
+                        ) : (
+                          <div style={{ fontSize: 12, color: "#9ca3af" }}>No sections defined</div>
+                        )}
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 13, color: recipe.normalizedSections.length > 0 ? "#1f2937" : "#6b7280" }}>
+                        {recipe.normalizedSections.length > 0
+                          ? recipe.normalizedSections.map((s) => {
+                              const ps = partSections.find((p) => p.slot === s);
+                              return ps?.name || `S${s}`;
+                            }).join(", ")
+                          : "—"}
                       </div>
                     )}
                   </div>

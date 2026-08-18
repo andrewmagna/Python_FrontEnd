@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useSession } from "../SessionContext.jsx";
+import { SLOT_COLORS } from "../lib/sections.js";
+import { unionOfZones } from "../lib/sectionShapes.js";
 
 const ORIENTATION_OPTIONS = [
   { value: 1, label: "0°" },
@@ -18,7 +20,7 @@ const ORIENTATION_SELECT_OPTIONS = [
 ];
 
 export default function AdminEditor() {
-  const { partId, sectionIndex } = useParams();
+  const { partId } = useParams();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const sessionData = useSession();
@@ -36,7 +38,6 @@ export default function AdminEditor() {
   const [zoneIdTouched, setZoneIdTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
-  const [availableSections, setAvailableSections] = useState([]);
   const [selectedZoneId, setSelectedZoneId] = useState(null);
   const [selectedVertexIndex, setSelectedVertexIndex] = useState(null);
   const [renumberInput, setRenumberInput] = useState("");
@@ -44,14 +45,21 @@ export default function AdminEditor() {
   const [unsavedChanges, setUnsavedChanges] = useState(false);
   const [suppressNextSvgClick, setSuppressNextSvgClick] = useState(false);
   const [editMode, setEditMode] = useState("move");
-  const [partUsedZoneIdsOtherSections, setPartUsedZoneIdsOtherSections] =
-    useState([]);
-  const [zoneIdsByOtherSection, setZoneIdsByOtherSection] = useState({});
   const [zoom, setZoom] = useState(1);
   const [panInfo, setPanInfo] = useState(null);
   const [workspaceHeight, setWorkspaceHeight] = useState(520);
   const [hoveredZoneId, setHoveredZoneId] = useState(null);
+  const [showSections, setShowSections] = useState(true);
   const [activeControlTab, setActiveControlTab] = useState("draw");
+
+  const [sections, setSections] = useState([]);
+  const [sectionEditMode, setSectionEditMode] = useState(null); // null | "add" | "edit"
+  const [sectionEditIndex, setSectionEditIndex] = useState(null);
+  const [sectionEditSlot, setSectionEditSlot] = useState(1);
+  const [sectionEditName, setSectionEditName] = useState("");
+  const [sectionEditZoneIds, setSectionEditZoneIds] = useState([]);
+  const [sectionLassoPoints, setSectionLassoPoints] = useState([]);
+  const [sectionIsDrawing, setSectionIsDrawing] = useState(false);
 
   const [showOrientationPanel, setShowOrientationPanel] = useState(false);
   const [orientationEditMode, setOrientationEditMode] = useState("assign");
@@ -198,17 +206,9 @@ export default function AdminEditor() {
 
     setAuthorized(true);
 
-    const partRes = await fetch(`/api/parts/${partId}`);
-    if (partRes.ok) {
-      const partData = await partRes.json();
-      setAvailableSections((partData.sections || []).map((s) => s.index));
-    }
-
-    const res = await fetch(
-      `/api/editor/parts/${partId}/sections/${sectionIndex}`,
-    );
+    const res = await fetch(`/api/editor/parts/${partId}`);
     if (!res.ok) {
-      alert("Failed to load editor section");
+      alert("Failed to load editor data");
       setLoading(false);
       return;
     }
@@ -217,10 +217,7 @@ export default function AdminEditor() {
     setImageUrl(data.image_url);
     setImageSize(data.image_size || { width: 1920, height: 1080 });
     setZones((data.zones || []).map(normalizeZone));
-    setPartUsedZoneIdsOtherSections(
-      data.part_used_zone_ids_other_sections || [],
-    );
-    setZoneIdsByOtherSection(data.zone_ids_by_other_section || {});
+    setSections(data.sections || []);
     setDraftPoints([]);
     setZoneIdInput("");
     setZoneIdTouched(false);
@@ -231,6 +228,8 @@ export default function AdminEditor() {
     setUnsavedChanges(false);
     setPanInfo(null);
     setHoveredZoneId(null);
+    setSectionEditMode(null);
+    setSectionEditIndex(null);
     resetOrientationAssignmentState();
     setLoading(false);
 
@@ -253,7 +252,7 @@ export default function AdminEditor() {
 
   useEffect(() => {
     loadEditorSection();
-  }, [navigate, partId, sectionIndex, returnTarget, sessionData, currentRole]);
+  }, [navigate, partId, returnTarget, sessionData, currentRole]);
 
   useEffect(() => {
     function handleBeforeUnload(e) {
@@ -272,21 +271,15 @@ export default function AdminEditor() {
     () => new Set(zones.map((z) => z.zone_id)),
     [zones],
   );
-  const forbiddenZoneIds = useMemo(
-    () => new Set(partUsedZoneIdsOtherSections),
-    [partUsedZoneIdsOtherSections],
-  );
-  const currentSectionNumber = parseInt(sectionIndex, 10);
-  const showSectionSelector = availableSections.length > 1;
 
   const nextAvailableZoneId = useMemo(() => {
-    for (let i = 1; i <= 40; i++) {
-      if (!usedZoneIds.has(i) && !forbiddenZoneIds.has(i)) {
+    for (let i = 1; i <= 35; i++) {
+      if (!usedZoneIds.has(i)) {
         return String(i);
       }
     }
     return "";
-  }, [usedZoneIds, forbiddenZoneIds]);
+  }, [usedZoneIds]);
 
   const scaleFactor = imageSize.width / 1920;
   const handleRadius = Math.max(8, 8 * scaleFactor);
@@ -315,8 +308,7 @@ export default function AdminEditor() {
     if (
       !zoneIdTouched ||
       zoneIdInput === "" ||
-      usedZoneIds.has(Number(zoneIdInput)) ||
-      forbiddenZoneIds.has(Number(zoneIdInput))
+      usedZoneIds.has(Number(zoneIdInput))
     ) {
       setZoneIdInput(nextAvailableZoneId);
     }
@@ -327,7 +319,6 @@ export default function AdminEditor() {
     zoneIdTouched,
     zoneIdInput,
     usedZoneIds,
-    forbiddenZoneIds,
   ]);
 
   useEffect(() => {
@@ -471,13 +462,6 @@ export default function AdminEditor() {
     navigate("/");
   }
 
-  function goToSection(targetSection) {
-    if (targetSection === currentSectionNumber) return;
-    if (!confirmLoseChanges()) return;
-
-    navigate(`/admin/editor/${partId}/${targetSection}?return=${returnTarget}`);
-  }
-
   function zoomIn() {
     hasUserAdjustedZoomRef.current = true;
     setZoom((prev) => clampUserZoom(prev + 0.1));
@@ -539,6 +523,7 @@ export default function AdminEditor() {
   function onViewerPointerDown(e) {
     if (dragInfo) return;
     if (showOrientationPanel) return;
+    if (sectionEditMode !== null) return;
     if (e.button !== 0) return;
     startPan(e);
   }
@@ -577,11 +562,27 @@ export default function AdminEditor() {
   }
 
   function onSvgPointerDown(e) {
-    if (!showOrientationPanel) return;
-    if (orientationReviewMode) return;
+    if (e.button !== 0) return;
     if (dragInfo) return;
     if (!svgRef.current) return;
-    if (e.button !== 0) return;
+
+    // Section lasso drawing
+    if (sectionEditMode !== null) {
+      e.preventDefault();
+      e.stopPropagation();
+      const [x, y] = svgPointFromEvent(svgRef.current, e);
+      setPanInfo(null);
+      setSuppressNextSvgClick(false);
+      setSectionIsDrawing(true);
+      setSectionLassoPoints([[x, y]]);
+      if (e.currentTarget.setPointerCapture) {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }
+      return;
+    }
+
+    if (!showOrientationPanel) return;
+    if (orientationReviewMode) return;
 
     e.preventDefault();
     e.stopPropagation();
@@ -609,6 +610,10 @@ export default function AdminEditor() {
     }
 
     if (showOrientationPanel) {
+      return;
+    }
+
+    if (sectionEditMode !== null) {
       return;
     }
 
@@ -687,6 +692,15 @@ export default function AdminEditor() {
   function onZoneClick(e, zoneId) {
     e.stopPropagation();
 
+    if (sectionEditMode !== null && !showOrientationPanel) {
+      setSectionEditZoneIds((prev) =>
+        prev.includes(zoneId)
+          ? prev.filter((id) => id !== zoneId)
+          : [...prev, zoneId].sort((a, b) => a - b),
+      );
+      return;
+    }
+
     if (showOrientationPanel && orientationReviewMode) {
       setOrientationCandidateZoneIds((prev) =>
         prev.includes(zoneId)
@@ -709,6 +723,19 @@ export default function AdminEditor() {
   }
 
   function onSvgPointerMove(e) {
+    if (sectionIsDrawing && svgRef.current) {
+      const [x, y] = svgPointFromEvent(svgRef.current, e);
+      setSectionLassoPoints((prev) => {
+        if (prev.length === 0) return [[x, y]];
+        const last = prev[prev.length - 1];
+        const dx = x - last[0];
+        const dy = y - last[1];
+        if (dx * dx + dy * dy < 16) return prev;
+        return [...prev, [x, y]];
+      });
+      return;
+    }
+
     if (showOrientationPanel && orientationIsDrawing && svgRef.current) {
       const [x, y] = svgPointFromEvent(svgRef.current, e);
 
@@ -778,6 +805,25 @@ export default function AdminEditor() {
   }
 
   function onSvgPointerUp(e) {
+    if (sectionIsDrawing) {
+      e.preventDefault();
+      e.stopPropagation();
+      const candidates = zones
+        .filter((z) => isCentroidInPolygon(z.points, sectionLassoPoints))
+        .map((z) => z.zone_id);
+      setSectionEditZoneIds((prev) => {
+        const prevSet = new Set(prev);
+        for (const id of candidates) prevSet.add(id);
+        return [...prevSet].sort((a, b) => a - b);
+      });
+      setSectionLassoPoints([]);
+      setSectionIsDrawing(false);
+      if (e.currentTarget.releasePointerCapture) {
+        try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+      }
+      return;
+    }
+
     if (showOrientationPanel && orientationIsDrawing) {
       e.preventDefault();
       e.stopPropagation();
@@ -826,20 +872,13 @@ export default function AdminEditor() {
   function saveDraftPolygon() {
     const zoneId = parseInt(zoneIdInput, 10);
 
-    if (!zoneId || zoneId < 1 || zoneId > 40) {
-      alert("Zone ID must be between 1 and 40");
-      return;
-    }
-
-    if (forbiddenZoneIds.has(zoneId)) {
-      alert(
-        `Zone ID ${zoneId} is already used in another section of this part`,
-      );
+    if (!zoneId || zoneId < 1 || zoneId > 35) {
+      alert("Zone ID must be between 1 and 35 (IDs 36–40 are reserved for zone sections)");
       return;
     }
 
     if (usedZoneIds.has(zoneId)) {
-      alert("That zone ID is already used in this section");
+      alert("That zone ID is already used");
       return;
     }
 
@@ -867,9 +906,10 @@ export default function AdminEditor() {
   }
 
   async function importOverlay() {
-    if (zones.length > 0) {
+    if (zones.length > 0 || sections.length > 0) {
+      const sectionWarning = sections.length > 0 ? ` This will also clear ${sections.length} section(s).` : "";
       const ok = window.confirm(
-        "Importing from overlay will replace all current zones in this section. Continue?",
+        `Importing from overlay will replace all current zones.${sectionWarning} Continue?`,
       );
       if (!ok) return;
     }
@@ -878,10 +918,8 @@ export default function AdminEditor() {
       setImportBusy(true);
 
       const res = await fetch(
-        `/api/editor/parts/${partId}/sections/${sectionIndex}/import`,
-        {
-          method: "POST",
-        },
+        `/api/editor/parts/${partId}/import`,
+        { method: "POST" },
       );
 
       const data = await res.json().catch(() => ({}));
@@ -900,6 +938,7 @@ export default function AdminEditor() {
           : imageSize;
 
       setZones(importedZones);
+      setSections([]);
       setImageSize(nextImageSize);
       setDraftPoints([]);
       setZoneIdInput("");
@@ -929,6 +968,40 @@ export default function AdminEditor() {
     }
   }
 
+  // removeMap: Map<slot, Set<zoneId>> — which zones to pull from which sections.
+  // Returns true to proceed, false if user cancelled.
+  function trimSectionsForZones(removeMap, preamble) {
+    const changes = [];
+    for (const [slot, removeIds] of removeMap) {
+      const s = sections.find((sec) => sec.slot === slot);
+      if (!s || removeIds.size === 0) continue;
+      const remaining = s.zone_ids.filter((id) => !removeIds.has(id));
+      changes.push({ section: s, remaining, willDelete: remaining.length < 2 });
+    }
+    if (changes.length === 0) return true;
+
+    const toDelete = changes.filter((c) => c.willDelete);
+    const toTrim = changes.filter((c) => !c.willDelete);
+    let msg = preamble ? preamble + "\n" : "";
+    if (toDelete.length > 0)
+      msg += "Sections to be removed (too few zones left): " + toDelete.map((c) => c.section.name || "S" + c.section.slot).join(", ") + "\n";
+    if (toTrim.length > 0)
+      msg += "Sections to be trimmed (zone removed): " + toTrim.map((c) => c.section.name || "S" + c.section.slot).join(", ") + "\n";
+
+    if (!window.confirm(msg + "\nContinue?")) return false;
+
+    setSections((prev) =>
+      prev
+        .map((s) => {
+          const change = changes.find((c) => c.section.slot === s.slot);
+          return change ? { ...s, zone_ids: change.remaining } : s;
+        })
+        .filter((s) => s.zone_ids.length >= 2),
+    );
+    setUnsavedChanges(true);
+    return true;
+  }
+
   function applyOrientationAssignment() {
     if (!orientationReviewMode) {
       alert("Draw a lasso first");
@@ -940,18 +1013,32 @@ export default function AdminEditor() {
       return;
     }
 
+    const removeMap = new Map();
+    for (const s of sections) {
+      const conflicting = new Set();
+      for (const zid of s.zone_ids) {
+        if (!orientationCandidateSet.has(zid)) continue;
+        const z = zones.find((zone) => zone.zone_id === zid);
+        const newOri =
+          orientationEditMode === "assign"
+            ? orientationValue
+            : z?.orientation === orientationValue
+              ? null
+              : z?.orientation;
+        if (newOri !== s.orientation) conflicting.add(zid);
+      }
+      if (conflicting.size > 0) removeMap.set(s.slot, conflicting);
+    }
+
+    if (removeMap.size > 0) {
+      if (!trimSectionsForZones(removeMap, "This orientation change affects " + removeMap.size + " section(s).")) return;
+    }
+
     setZones((prev) =>
       prev.map((z) => {
         if (!orientationCandidateSet.has(z.zone_id)) return z;
-
-        if (orientationEditMode === "assign") {
-          return { ...z, orientation: orientationValue };
-        }
-
-        if (z.orientation === orientationValue) {
-          return { ...z, orientation: null };
-        }
-
+        if (orientationEditMode === "assign") return { ...z, orientation: orientationValue };
+        if (z.orientation === orientationValue) return { ...z, orientation: null };
         return z;
       }),
     );
@@ -970,14 +1057,21 @@ export default function AdminEditor() {
           ? Number(value)
           : null;
 
+    // Remove selectedZoneId from any section whose orientation differs from nextOrientation
+    // (including when nextOrientation is null — null doesn't match any section orientation 1..4)
+    const removeMap = new Map();
+    for (const s of sections) {
+      if (s.zone_ids.includes(selectedZoneId) && nextOrientation !== s.orientation) {
+        removeMap.set(s.slot, new Set([selectedZoneId]));
+      }
+    }
+    if (removeMap.size > 0) {
+      if (!trimSectionsForZones(removeMap, "Changing orientation of zone " + selectedZoneId + " affects " + removeMap.size + " section(s).")) return;
+    }
+
     setZones((prev) =>
       prev.map((z) =>
-        z.zone_id === selectedZoneId
-          ? {
-              ...z,
-              orientation: nextOrientation,
-            }
-          : z,
+        z.zone_id === selectedZoneId ? { ...z, orientation: nextOrientation } : z,
       ),
     );
 
@@ -985,10 +1079,15 @@ export default function AdminEditor() {
   }
 
   function deleteZone(zoneId) {
+    const removeMap = new Map();
+    for (const s of sections) {
+      if (s.zone_ids.includes(zoneId)) removeMap.set(s.slot, new Set([zoneId]));
+    }
+    if (removeMap.size > 0) {
+      if (!trimSectionsForZones(removeMap, "Zone " + zoneId + " is used in " + removeMap.size + " section(s).")) return;
+    }
     setZones((prev) => prev.filter((z) => z.zone_id !== zoneId));
-    setOrientationCandidateZoneIds((prev) =>
-      prev.filter((id) => id !== zoneId),
-    );
+    setOrientationCandidateZoneIds((prev) => prev.filter((id) => id !== zoneId));
     if (selectedZoneId === zoneId) {
       clearSelection();
     }
@@ -1027,18 +1126,13 @@ export default function AdminEditor() {
 
     const newId = parseInt(renumberInput, 10);
 
-    if (!newId || newId < 1 || newId > 40) {
-      alert("Zone ID must be between 1 and 40");
-      return;
-    }
-
-    if (newId !== selectedZoneId && forbiddenZoneIds.has(newId)) {
-      alert(`Zone ID ${newId} is already used in another section of this part`);
+    if (!newId || newId < 1 || newId > 35) {
+      alert("Zone ID must be between 1 and 35 (IDs 36–40 are reserved for zone sections)");
       return;
     }
 
     if (newId !== selectedZoneId && usedZoneIds.has(newId)) {
-      alert("That zone ID is already used in this section");
+      alert("That zone ID is already used");
       return;
     }
 
@@ -1052,6 +1146,12 @@ export default function AdminEditor() {
       prev.map((id) => (id === selectedZoneId ? newId : id)),
     );
 
+    setSections((prev) =>
+      prev.map((s) => ({
+        ...s,
+        zone_ids: s.zone_ids.map((id) => (id === selectedZoneId ? newId : id)).sort((a, b) => a - b),
+      })),
+    );
     setSelectedZoneId(newId);
     setRenumberInput(String(newId));
     setUnsavedChanges(true);
@@ -1061,27 +1161,28 @@ export default function AdminEditor() {
     try {
       setBusy(true);
 
-      const res = await fetch(
-        `/api/editor/parts/${partId}/sections/${sectionIndex}`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            image: `section${sectionIndex}_clean.png`,
-            image_size: imageSize,
-            zones: zones
-              .slice()
-              .sort((a, b) => a.zone_id - b.zone_id)
-              .map((z) => ({
-                zone_id: z.zone_id,
-                points: z.points,
-                orientation: z.orientation ?? null,
-              })),
-          }),
-        },
-      );
+      const res = await fetch(`/api/editor/parts/${partId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image: "part.png",
+          image_size: imageSize,
+          zones: zones
+            .slice()
+            .sort((a, b) => a.zone_id - b.zone_id)
+            .map((z) => ({
+              zone_id: z.zone_id,
+              points: z.points,
+              orientation: z.orientation ?? null,
+            })),
+          sections: sections.map((s) => ({
+            slot: s.slot,
+            name: s.name,
+            zone_ids: s.zone_ids,
+            orientation: s.orientation,
+          })),
+        }),
+      });
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -1090,7 +1191,7 @@ export default function AdminEditor() {
       }
 
       setUnsavedChanges(false);
-      alert("Section saved");
+      alert("Zones saved");
       return true;
     } finally {
       setBusy(false);
@@ -1145,44 +1246,8 @@ export default function AdminEditor() {
           flexWrap: "wrap",
         }}
       >
-        {showSectionSelector && (
-          <>
-            <div
-              style={{
-                fontSize: 12,
-                fontWeight: 700,
-                color: "#6b7280",
-              }}
-            >
-              SECTIONS
-            </div>
-            {availableSections
-              .slice()
-              .sort((a, b) => a - b)
-              .map((sec) => (
-                <button
-                  key={sec}
-                  onClick={() => goToSection(sec)}
-                  style={{
-                    fontWeight: sec === currentSectionNumber ? 700 : 400,
-                    border:
-                      sec === currentSectionNumber
-                        ? "2px solid #2563eb"
-                        : "1px solid #ccc",
-                    padding: "6px 10px",
-                    borderRadius: 8,
-                    background: "#fff",
-                  }}
-                >
-                  Section {sec}
-                </button>
-              ))}
-          </>
-        )}
-
         <div
           style={{
-            marginLeft: showSectionSelector ? 8 : 0,
             display: "flex",
             gap: 8,
             alignItems: "center",
@@ -1202,7 +1267,7 @@ export default function AdminEditor() {
                 busy || importBusy ? "none" : "0 4px 12px rgba(37,99,235,0.18)",
             }}
           >
-            {busy ? "Saving..." : "Save Section"}
+            {busy ? "Saving..." : "Save Zones"}
           </button>
 
           <button
@@ -1234,6 +1299,20 @@ export default function AdminEditor() {
             }}
           >
             Edit Recipes
+          </button>
+
+          <button
+            onClick={() => setShowSections((prev) => !prev)}
+            style={{
+              padding: "8px 12px",
+              borderRadius: 10,
+              border: "1px solid #d1d5db",
+              background: showSections ? "#eff6ff" : "#fff",
+              color: showSections ? "#2563eb" : "#6b7280",
+              fontWeight: 600,
+            }}
+          >
+            {showSections ? "Sections On" : "Sections Off"}
           </button>
         </div>
 
@@ -1364,7 +1443,7 @@ export default function AdminEditor() {
                   <input
                     type="number"
                     min="1"
-                    max="40"
+                    max="35"
                     placeholder="New zone ID"
                     value={zoneIdInput}
                     onChange={(e) => {
@@ -1557,21 +1636,23 @@ export default function AdminEditor() {
             )}
           </div>
 
-          <div
-            style={{
-              border: "1px solid #ddd",
-              borderRadius: 10,
-              padding: 12,
-              flex: "1 1 auto",
-              minHeight: 0,
-              background: "#fff",
-            }}
-          >
-            <h3 style={{ marginTop: 0, marginBottom: 12 }}>Upcoming Feature</h3>
-            <div style={{ fontSize: 14, color: "#666" }}>
-              Left bottom panel placeholder
-            </div>
-          </div>
+          <SectionsPanel
+            zones={zones}
+            sections={sections}
+            setSections={setSections}
+            setUnsavedChanges={setUnsavedChanges}
+            sectionEditMode={sectionEditMode}
+            setSectionEditMode={setSectionEditMode}
+            sectionEditIndex={sectionEditIndex}
+            setSectionEditIndex={setSectionEditIndex}
+            sectionEditSlot={sectionEditSlot}
+            setSectionEditSlot={setSectionEditSlot}
+            sectionEditName={sectionEditName}
+            setSectionEditName={setSectionEditName}
+            sectionEditZoneIds={sectionEditZoneIds}
+            setSectionEditZoneIds={setSectionEditZoneIds}
+            getOrientationLabel={getOrientationLabel}
+          />
         </div>
 
         <div style={{ minWidth: 0, minHeight: 0 }}>
@@ -1678,6 +1759,57 @@ export default function AdminEditor() {
                   onPointerUp={onSvgPointerUp}
                   onPointerLeave={onSvgPointerUp}
                 >
+                  {showSections && sections.map((s) => {
+                    const memberZones = zones.filter((z) => s.zone_ids.includes(z.zone_id));
+                    const d = unionOfZones(memberZones);
+                    if (!d) return null;
+                    const color = SLOT_COLORS[s.slot];
+                    const c = memberZones.reduce(
+                      (acc, z) => {
+                        const zc = centroid(z.points);
+                        return { x: acc.x + zc.x / memberZones.length, y: acc.y + zc.y / memberZones.length };
+                      },
+                      { x: 0, y: 0 },
+                    );
+                    const labelText = s.name || `S${s.slot}`;
+                    const fontSize = Math.max(20, 20 * scaleFactor);
+                    const estWidth = labelText.length * fontSize * 0.6 + 16;
+                    const estHeight = fontSize * 1.4;
+                    return (
+                      <g key={`section-overlay-${s.slot}`} style={{ pointerEvents: "none" }}>
+                        <path
+                          d={d}
+                          fill={color.fill}
+                          stroke={color.stroke}
+                          strokeWidth={Math.max(3, 3 * scaleFactor)}
+                          strokeDasharray={`${Math.max(12, 12 * scaleFactor)} ${Math.max(6, 6 * scaleFactor)}`}
+                        />
+                        <rect
+                          x={c.x - estWidth / 2}
+                          y={c.y - estHeight / 2}
+                          width={estWidth}
+                          height={estHeight}
+                          rx={Math.max(6, 6 * scaleFactor)}
+                          ry={Math.max(6, 6 * scaleFactor)}
+                          fill={color.stroke}
+                          opacity={0.88}
+                        />
+                        <text
+                          x={c.x}
+                          y={c.y}
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          fontSize={fontSize}
+                          fontWeight={800}
+                          fill="#fff"
+                          style={{ userSelect: "none" }}
+                        >
+                          {labelText}
+                        </text>
+                      </g>
+                    );
+                  })}
+
                   {zones.map((z) => {
                     const selected = z.zone_id === selectedZoneId;
                     const candidate = orientationCandidateSet.has(z.zone_id);
@@ -1688,6 +1820,8 @@ export default function AdminEditor() {
                       selected,
                       candidate,
                     );
+                    const sectionSelected = sectionEditMode !== null && sectionEditZoneIds.includes(z.zone_id);
+                    const sectionColor = sectionSelected && sectionEditSlot ? SLOT_COLORS[sectionEditSlot] : null;
 
                     let strokeWidth = selected
                       ? selectedZoneStrokeWidth
@@ -1724,8 +1858,8 @@ export default function AdminEditor() {
                       >
                         <polygon
                           points={z.points.map((p) => p.join(",")).join(" ")}
-                          fill={colors.fill}
-                          stroke={colors.stroke}
+                          fill={sectionColor ? sectionColor.fill : colors.fill}
+                          stroke={sectionColor ? sectionColor.stroke : colors.stroke}
                           strokeWidth={strokeWidth}
                           onClick={(e) => onZoneClick(e, z.zone_id)}
                           onPointerDown={(e) => onZonePointerDown(e, z.zone_id)}
@@ -1838,6 +1972,17 @@ export default function AdminEditor() {
                       style={{ pointerEvents: "none" }}
                     />
                   )}
+
+                  {sectionIsDrawing && sectionLassoPoints.length > 1 && (
+                    <polygon
+                      points={sectionLassoPoints.map((p) => p.join(",")).join(" ")}
+                      fill="rgba(139,92,246,0.10)"
+                      stroke="rgba(109,40,217,0.90)"
+                      strokeWidth={orientationLassoStrokeWidth}
+                      strokeDasharray={`${Math.max(8, 8 * scaleFactor)} ${Math.max(6, 6 * scaleFactor)}`}
+                      style={{ pointerEvents: "none" }}
+                    />
+                  )}
                 </svg>
               </div>
             </div>
@@ -1920,7 +2065,7 @@ export default function AdminEditor() {
                   <input
                     type="number"
                     min="1"
-                    max="40"
+                    max="35"
                     value={renumberInput}
                     onChange={(e) => setRenumberInput(e.target.value)}
                     style={{ padding: 8, width: 120 }}
@@ -2053,6 +2198,311 @@ export default function AdminEditor() {
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function SectionsPanel({
+  zones,
+  sections,
+  setSections,
+  setUnsavedChanges,
+  sectionEditMode,
+  setSectionEditMode,
+  sectionEditIndex,
+  setSectionEditIndex,
+  sectionEditSlot,
+  setSectionEditSlot,
+  sectionEditName,
+  setSectionEditName,
+  sectionEditZoneIds,
+  setSectionEditZoneIds,
+  getOrientationLabel,
+}) {
+  const usedSlots = new Set(sections.map((s) => s.slot));
+
+  function computeOrientation(zoneIds) {
+    if (zoneIds.length === 0) return null;
+    const orientations = zoneIds.map((id) => {
+      const z = zones.find((z) => z.zone_id === id);
+      return z ? z.orientation : null;
+    });
+    if (orientations.some((o) => o === null)) return "unassigned";
+    const first = orientations[0];
+    if (orientations.every((o) => o === first)) return first;
+    return "mixed";
+  }
+
+  function startAdd() {
+    // pick lowest unused slot
+    let slot = 1;
+    while (slot <= 5 && usedSlots.has(slot)) slot++;
+    if (slot > 5) return;
+    setSectionEditIndex(null);
+    setSectionEditSlot(slot);
+    setSectionEditName("");
+    setSectionEditZoneIds([]);
+    setSectionEditMode("add");
+  }
+
+  function startEdit(idx) {
+    const s = sections[idx];
+    setSectionEditIndex(idx);
+    setSectionEditSlot(s.slot);
+    setSectionEditName(s.name);
+    setSectionEditZoneIds([...s.zone_ids]);
+    setSectionEditMode("edit");
+  }
+
+  function cancelEdit() {
+    setSectionEditMode(null);
+    setSectionEditIndex(null);
+  }
+
+  function confirmEdit() {
+    if (sectionEditZoneIds.length < 2) {
+      alert("A section needs at least 2 zones");
+      return;
+    }
+    const orientation = computeOrientation(sectionEditZoneIds);
+    if (orientation === "unassigned") {
+      alert("All member zones must have an orientation assigned");
+      return;
+    }
+    if (orientation === "mixed") {
+      alert("All member zones must share the same orientation");
+      return;
+    }
+    const newSection = {
+      slot: sectionEditSlot,
+      name: sectionEditName.trim() || `Section ${sectionEditSlot}`,
+      zone_ids: [...sectionEditZoneIds].sort((a, b) => a - b),
+      orientation,
+    };
+    setSections((prev) => {
+      if (sectionEditMode === "add") {
+        return [...prev, newSection].sort((a, b) => a.slot - b.slot);
+      }
+      const next = prev.map((s, i) => (i === sectionEditIndex ? newSection : s));
+      return next.sort((a, b) => a.slot - b.slot);
+    });
+    setUnsavedChanges(true);
+    setSectionEditMode(null);
+    setSectionEditIndex(null);
+  }
+
+  function deleteSection(idx) {
+    setSections((prev) => prev.filter((_, i) => i !== idx));
+    setUnsavedChanges(true);
+  }
+
+  function toggleZoneInEdit(zoneId, checked) {
+    setSectionEditZoneIds((prev) =>
+      checked ? [...prev, zoneId] : prev.filter((id) => id !== zoneId),
+    );
+  }
+
+  const editOrientation = computeOrientation(sectionEditZoneIds);
+  const editOrientationLabel =
+    editOrientation === null
+      ? "—"
+      : editOrientation === "unassigned"
+        ? "Has unassigned zones"
+        : editOrientation === "mixed"
+          ? "Mixed — pick zones with same orientation"
+          : getOrientationLabel(editOrientation);
+
+  const availableSlots = sectionEditMode === "add"
+    ? [1, 2, 3, 4, 5].filter((s) => !usedSlots.has(s))
+    : [sectionEditSlot];
+
+  const canAdd = usedSlots.size < 5 && zones.length >= 2 && !sectionEditMode;
+
+  return (
+    <div
+      style={{
+        border: "1px solid #ddd",
+        borderRadius: 10,
+        padding: 12,
+        flex: "1 1 auto",
+        minHeight: 0,
+        background: "#fff",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flex: "0 0 auto",
+        }}
+      >
+        <h3 style={{ margin: 0, fontSize: 15 }}>Sections</h3>
+        {canAdd && (
+          <button
+            onClick={startAdd}
+            style={{
+              padding: "4px 10px",
+              borderRadius: 8,
+              border: "1px solid #2563eb",
+              background: "#2563eb",
+              color: "#fff",
+              fontWeight: 700,
+              fontSize: 13,
+            }}
+          >
+            + Add
+          </button>
+        )}
+      </div>
+
+      {sectionEditMode && (
+        <div
+          style={{
+            border: "1px solid #e5e7eb",
+            borderRadius: 8,
+            padding: 10,
+            background: "#f8fbff",
+            flex: "0 0 auto",
+          }}
+        >
+          <div style={{ marginBottom: 8 }}>
+            <label style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", display: "block", marginBottom: 4 }}>
+              SLOT (auto-assigned)
+            </label>
+            <div style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid #e5e7eb", background: "#f9fafb", fontSize: 13, color: "#374151" }}>
+              Slot {sectionEditSlot} → Zone_{35 + sectionEditSlot}_CMD
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 8 }}>
+            <label style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", display: "block", marginBottom: 4 }}>
+              NAME
+            </label>
+            <input
+              type="text"
+              value={sectionEditName}
+              onChange={(e) => setSectionEditName(e.target.value)}
+              placeholder={`Section ${sectionEditSlot}`}
+              style={{ padding: "6px 8px", width: "100%", boxSizing: "border-box", borderRadius: 6, border: "1px solid #d1d5db" }}
+            />
+          </div>
+
+          <div style={{ marginBottom: 6 }}>
+            <label style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", display: "block", marginBottom: 4 }}>
+              ZONES (min 2, same orientation)
+            </label>
+            <div style={{ maxHeight: 100, overflowY: "auto", border: "1px solid #e5e7eb", borderRadius: 6, padding: 4 }}>
+              {zones.length === 0 && (
+                <div style={{ fontSize: 12, color: "#9ca3af", padding: 4 }}>No zones yet</div>
+              )}
+              {zones
+                .slice()
+                .sort((a, b) => a.zone_id - b.zone_id)
+                .map((z) => (
+                  <label key={z.zone_id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 4px", fontSize: 13, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={sectionEditZoneIds.includes(z.zone_id)}
+                      onChange={(e) => toggleZoneInEdit(z.zone_id, e.target.checked)}
+                    />
+                    Zone {z.zone_id}
+                    <span style={{ fontSize: 11, color: "#9ca3af" }}>
+                      ({getOrientationLabel(z.orientation)})
+                    </span>
+                  </label>
+                ))}
+            </div>
+          </div>
+
+          <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>
+            Orientation: <strong>{editOrientationLabel}</strong>
+          </div>
+
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              onClick={confirmEdit}
+              style={{
+                flex: 1,
+                padding: "6px 10px",
+                borderRadius: 8,
+                border: "1px solid #2563eb",
+                background: "#2563eb",
+                color: "#fff",
+                fontWeight: 700,
+                fontSize: 13,
+              }}
+            >
+              OK
+            </button>
+            <button
+              onClick={cancelEdit}
+              style={{
+                flex: 1,
+                padding: "6px 10px",
+                borderRadius: 8,
+                border: "1px solid #d1d5db",
+                background: "#fff",
+                fontWeight: 600,
+                fontSize: 13,
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ flex: 1, overflowY: "auto", minHeight: 0, display: "grid", gap: 6, alignContent: "start" }}>
+        {sections.length === 0 && !sectionEditMode && (
+          <div style={{ fontSize: 13, color: "#9ca3af" }}>No sections defined</div>
+        )}
+        {sections.map((s, idx) => (
+          <div
+            key={s.slot}
+            style={{
+              border: "1px solid #e5e7eb",
+              borderRadius: 8,
+              padding: "7px 10px",
+              background: "#fff",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start" }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>
+                  S{s.slot}: {s.name}
+                </div>
+                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
+                  {getOrientationLabel(s.orientation)} · Zones: {s.zone_ids.join(", ")}
+                </div>
+                <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 1 }}>
+                  → Zone_{35 + s.slot}_CMD
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button
+                  onClick={() => startEdit(idx)}
+                  disabled={!!sectionEditMode}
+                  style={{ padding: "3px 8px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff", fontSize: 12, fontWeight: 600 }}
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => deleteSection(idx)}
+                  disabled={!!sectionEditMode}
+                  style={{ padding: "3px 8px", borderRadius: 6, border: "1px solid #fca5a5", background: "#fff", color: "#b91c1c", fontSize: 12, fontWeight: 700 }}
+                >
+                  Del
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

@@ -9,6 +9,8 @@ import {
   normalizeZoneMap,
   getActivePathIndex,
 } from "../lib/recipes.js";
+import { SLOT_COLORS } from "../lib/sections.js";
+import { unionOfZones } from "../lib/sectionShapes.js";
 
 const ORIENTATION_LABELS = {
   1: "0°",
@@ -58,6 +60,7 @@ export default function PartPage() {
   const zoneStateRef = useRef({});
 
   const [sectionToggle, setSectionToggle] = useState(false);
+  const [sectionState, setSectionState] = useState({ 1: false, 2: false, 3: false, 4: false, 5: false });
 
   const pathsRef = useRef(getDefaultPaths());
 
@@ -335,15 +338,39 @@ export default function PartPage() {
             ? parsedSelectedRecipeId
             : null;
 
+        // Restore section state
+        const savedSections = Array.isArray(data.sections) ? data.sections : [];
+        const nextSectionState = { 1: false, 2: false, 3: false, 4: false, 5: false };
+        if (orientationMatches) {
+          for (const slot of savedSections) {
+            if (slot >= 1 && slot <= 5) nextSectionState[slot] = true;
+          }
+        }
+        // Only keep sections whose orientation matches current
+        if (orientationMatches && part) {
+          const partSections = part.sections || [];
+          for (const slot of Object.keys(nextSectionState)) {
+            const s = partSections.find((ps) => ps.slot === Number(slot));
+            if (nextSectionState[slot] && s && s.orientation !== effectiveOrientation) {
+              nextSectionState[slot] = false;
+            }
+          }
+        }
+
+        const activeSlotsToRestore = Object.entries(nextSectionState)
+          .filter(([, v]) => v)
+          .map(([k]) => Number(k));
+
         if (!cancelled) {
           setPaths(nextPaths);
           setZoneState(nextZones);
           setSelectedRecipeId(nextSelectedRecipeId);
+          setSectionState(nextSectionState);
         }
 
         if (debugOrientationOverride === "live" && opcConnected) {
           writePathsToOPC(nextPaths);
-          await pushZoneState(nextZones);
+          await pushZoneState(nextZones, { sections: activeSlotsToRestore });
         }
       } catch {
         if (!cancelled) {
@@ -464,6 +491,7 @@ export default function PartPage() {
     const nextPaths = overrides.paths ?? paths;
     const nextSelectedRecipeId =
       overrides.selected_recipe_id ?? selectedRecipeId;
+    const nextSectionState = overrides.section_state ?? sectionState;
 
     return {
       orientation: [1, 2, 3, 4].includes(nextOrientation)
@@ -472,6 +500,9 @@ export default function PartPage() {
       zones: nextZones,
       paths: nextPaths,
       selected_recipe_id: nextSelectedRecipeId,
+      sections: Object.entries(nextSectionState)
+        .filter(([, v]) => v)
+        .map(([k]) => Number(k)),
       saved_at: Date.now(),
     };
   }
@@ -626,14 +657,23 @@ export default function PartPage() {
       const nextPaths = normalizeRecipePaths(recipeData?.paths);
       const nextZones = normalizeRecipeZones(recipeData?.zones);
 
+      // D9: restore section state from recipe
+      const recipeSectionSlots = Array.isArray(recipeData?.sections) ? recipeData.sections : [];
+      const nextSectionState = { 1: false, 2: false, 3: false, 4: false, 5: false };
+      for (const slot of recipeSectionSlots) {
+        if (slot >= 1 && slot <= 5) nextSectionState[slot] = true;
+      }
+
       setPaths(nextPaths);
       setZoneState(nextZones);
+      setSectionState(nextSectionState);
       persistLastState(
         buildLastStatePayload({
           paths: nextPaths,
           zones: nextZones,
           selected_recipe_id: selectedRecipeId,
           orientation: effectiveOrientation,
+          section_state: nextSectionState,
         }),
       );
     } catch {
@@ -644,53 +684,26 @@ export default function PartPage() {
   }
 
 
-  const totalZoneCount = useMemo(() => {
-    if (!part || !Array.isArray(part.sections)) return 0;
-
-    return part.sections.reduce((count, section) => {
-      return count + (Array.isArray(section.zones) ? section.zones.length : 0);
-    }, 0);
-  }, [part]);
-
   const needsZoneSetup = useMemo(() => {
     if (!part) return false;
     if (part.configured === false) return true;
-    if (!Array.isArray(part.sections) || part.sections.length === 0)
-      return true;
-    if (totalZoneCount === 0) return true;
+    if (!Array.isArray(part.zones) || part.zones.length === 0) return true;
     return false;
-  }, [part, totalZoneCount]);
-
-  const firstEditableSection = useMemo(() => {
-    if (!part || !Array.isArray(part.sections) || part.sections.length === 0) {
-      return 1;
-    }
-
-    const sorted = [...part.sections]
-      .map((section) => section.index)
-      .filter((index) => typeof index === "number")
-      .sort((a, b) => a - b);
-
-    return sorted[0] || 1;
   }, [part]);
 
   const validZoneIds = useMemo(() => {
-    if (!part || !Array.isArray(part.sections)) return new Set();
+    if (!part || !Array.isArray(part.zones)) return new Set();
     if (![1, 2, 3, 4].includes(effectiveOrientation)) return new Set();
 
     const ids = new Set();
-
-    for (const section of part.sections) {
-      for (const zone of section.zones || []) {
-        if (
-          typeof zone.zone_id === "number" &&
-          zone.orientation === effectiveOrientation
-        ) {
-          ids.add(zone.zone_id);
-        }
+    for (const zone of part.zones) {
+      if (
+        typeof zone.zone_id === "number" &&
+        zone.orientation === effectiveOrientation
+      ) {
+        ids.add(zone.zone_id);
       }
     }
-
     return ids;
   }, [part, effectiveOrientation]);
 
@@ -724,6 +737,39 @@ export default function PartPage() {
     }
   }, [validZoneIds]);
 
+  // Clear section slots whose orientation no longer matches
+  useEffect(() => {
+    if (!part) return;
+    const partSections = part.sections || [];
+    const next = { ...sectionState };
+    let changed = false;
+
+    for (const [slotStr, active] of Object.entries(next)) {
+      if (!active) continue;
+      const slot = Number(slotStr);
+      const s = partSections.find((ps) => ps.slot === slot);
+      if (!s || s.orientation !== effectiveOrientation) {
+        next[slot] = false;
+        changed = true;
+      }
+    }
+
+    if (!changed) return;
+
+    setSectionState(next);
+
+    if (hasLoadedLastStateRef.current && !isRestoringLastStateRef.current && opcConnected) {
+      const activeSectionSlots = Object.entries(next)
+        .filter(([, v]) => v)
+        .map(([k]) => Number(k));
+      fetch("/api/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ part_id: partId, zones: zoneStateRef.current, sections: activeSectionSlots }),
+      }).catch(() => {});
+    }
+  }, [effectiveOrientation, part]);
+
   function isZoneAvailable(zone) {
     if (![1, 2, 3, 4].includes(effectiveOrientation)) return false;
     return zone.orientation === effectiveOrientation;
@@ -731,6 +777,12 @@ export default function PartPage() {
 
   async function toggleZone(id) {
     if (!validZoneIds.has(id)) return;
+
+    // Block zones locked by an active section
+    const isLocked = (part?.sections || []).some(
+      (s) => sectionState[s.slot] && s.zone_ids.includes(id),
+    );
+    if (isLocked) return;
 
     const previousState = zoneState;
     const nextState = {
@@ -747,31 +799,48 @@ export default function PartPage() {
         selected_recipe_id: null,
       }),
     );
-    await pushZoneState(nextState, () => setZoneState(previousState));
+    await pushZoneState(nextState, { onErrorRestore: () => setZoneState(previousState) });
   }
 
   async function clearAll() {
-    const previousState = zoneState;
+    const previousZoneState = zoneState;
+    const previousSectionState = sectionState;
+    const clearedSectionState = { 1: false, 2: false, 3: false, 4: false, 5: false };
     const nextState = createEmptyZoneState();
 
     setZoneState(nextState);
+    setSectionState(clearedSectionState);
     setSelectedRecipeId(null);
     persistLastState(
       buildLastStatePayload({
         zones: nextState,
         paths,
         selected_recipe_id: null,
+        section_state: clearedSectionState,
       }),
     );
-    await pushZoneState(nextState, () => setZoneState(previousState));
+    await pushZoneState(nextState, {
+      sections: [],
+      onErrorRestore: () => {
+        setZoneState(previousZoneState);
+        setSectionState(previousSectionState);
+      },
+    });
   }
 
   async function selectAllAvailable() {
     const previousState = zoneState;
     const nextState = { ...zoneState };
 
+    const lockedZoneIds = new Set();
+    for (const s of part?.sections || []) {
+      if (sectionState[s.slot]) {
+        for (const zid of s.zone_ids) lockedZoneIds.add(zid);
+      }
+    }
+
     for (const zoneId of validZoneIds) {
-      nextState[zoneId] = true;
+      if (!lockedZoneIds.has(zoneId)) nextState[zoneId] = true;
     }
 
     setZoneState(nextState);
@@ -783,7 +852,56 @@ export default function PartPage() {
         selected_recipe_id: null,
       }),
     );
-    await pushZoneState(nextState, () => setZoneState(previousState));
+    await pushZoneState(nextState, { onErrorRestore: () => setZoneState(previousState) });
+  }
+
+  async function toggleSection(slot) {
+    if (!part) return;
+    const section = (part.sections || []).find((s) => s.slot === slot);
+    if (!section) return;
+    if (section.orientation !== effectiveOrientation) return;
+    if (!opcConnected) {
+      alert("OPC is disconnected");
+      return;
+    }
+
+    const previousSectionState = sectionState;
+    const previousZoneState = zoneState;
+    const nextSectionState = { ...sectionState, [slot]: !sectionState[slot] };
+    const activeSectionSlots = Object.entries(nextSectionState)
+      .filter(([, v]) => v)
+      .map(([k]) => Number(k));
+
+    setSectionState(nextSectionState);
+
+    // Auto-deselect member zones of all active sections
+    const nextZones = { ...zoneState };
+    for (const [slotStr, active] of Object.entries(nextSectionState)) {
+      if (!active) continue;
+      const activeSec = (part.sections || []).find((ps) => ps.slot === Number(slotStr));
+      if (activeSec) {
+        for (const zid of activeSec.zone_ids) {
+          nextZones[zid] = false;
+        }
+      }
+    }
+    setZoneState(nextZones);
+
+    setSelectedRecipeId(null);
+    persistLastState(
+      buildLastStatePayload({
+        section_state: nextSectionState,
+        zones: nextZones,
+        selected_recipe_id: null,
+      }),
+    );
+    await pushZoneState(nextZones, {
+      sections: activeSectionSlots,
+      onErrorRestore: () => {
+        setSectionState(previousSectionState);
+        setZoneState(previousZoneState);
+      },
+    });
   }
 
   async function handleSectionToggle(newValue) {
@@ -799,7 +917,7 @@ export default function PartPage() {
     } catch {}
   }
 
-  async function pushZoneState(nextZoneState, onErrorRestore = null) {
+  async function pushZoneState(nextZoneState, { sections: activeSectionSlots = null, onErrorRestore = null } = {}) {
     if (!opcConnected) {
       alert("OPC is disconnected");
       if (onErrorRestore) {
@@ -807,6 +925,10 @@ export default function PartPage() {
       }
       return;
     }
+
+    const slotsToSend = activeSectionSlots ?? Object.entries(sectionState)
+      .filter(([, v]) => v)
+      .map(([k]) => Number(k));
 
     try {
       setAutoApplyBusy(true);
@@ -817,6 +939,7 @@ export default function PartPage() {
         body: JSON.stringify({
           part_id: partId,
           zones: nextZoneState,
+          sections: slotsToSend,
         }),
       });
 
@@ -927,8 +1050,7 @@ export default function PartPage() {
                 marginBottom: 18,
               }}
             >
-              This part cannot be opened until at least one section has valid
-              zone data.
+              This part cannot be opened until zones have been configured.
             </div>
 
             <div
@@ -944,20 +1066,13 @@ export default function PartPage() {
                 textAlign: "left",
               }}
             >
-              {part.missing_zones_sections?.length > 0 ? (
-                <>
-                  Missing zone files for sections:{" "}
-                  {part.missing_zones_sections.join(", ")}
-                </>
-              ) : (
-                <>Zone files exist, but no zones have been created yet.</>
-              )}
+              No zones exist yet for this part.
             </div>
 
             {canSeeAdmin ? (
               <button
                 onClick={() => {
-                  navigate(`/admin/editor/${part.part_id}/${firstEditableSection}?return=part`);
+                  navigate(`/admin/editor/${part.part_id}?return=part`);
                 }}
                 style={{
                   padding: "12px 18px",
@@ -1321,56 +1436,18 @@ export default function PartPage() {
             overflow: "hidden",
           }}
         >
-          <div
-            style={{
-              display: "grid",
-              gap: 12,
-              width: "100%",
-              height: "100%",
-              minHeight: 0,
-            }}
-          >
-            {part.sections.map((section) => (
-              <div
-                key={section.index}
-                style={{
-                  border: "1px solid #e5e7eb",
-                  borderRadius: 12,
-                  background: "#f8fafc",
-                  width: "100%",
-                  minHeight: 0,
-                  display: "flex",
-                  flexDirection: "column",
-                  overflow: "hidden",
-                }}
-              >
-                {part.sections.length > 1 && (
-                  <div
-                    style={{
-                      padding: "8px 12px",
-                      borderBottom: "1px solid #e5e7eb",
-                      fontWeight: 700,
-                      background: "#f9fafb",
-                      flex: "0 0 auto",
-                    }}
-                  >
-                    Section {section.index}
-                  </div>
-                )}
-
-                <div style={{ flex: 1, minHeight: 0, padding: 6 }}>
-                  <SectionViewer
-                    section={section}
-                    zoneState={zoneState}
-                    toggleZone={toggleZone}
-                    hoveredZone={hoveredZone}
-                    setHoveredZone={setHoveredZone}
-                    isZoneAvailable={isZoneAvailable}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
+          <ZoneCanvas
+            imageUrl={part.image_url}
+            imageSize={part.image_size}
+            zones={part.zones}
+            zoneState={zoneState}
+            toggleZone={toggleZone}
+            hoveredZone={hoveredZone}
+            setHoveredZone={setHoveredZone}
+            isZoneAvailable={isZoneAvailable}
+            sections={part.sections || []}
+            sectionState={sectionState}
+          />
         </div>
 
         <div
@@ -1407,6 +1484,20 @@ export default function PartPage() {
               valueColor="#1f2937"
               valueBg="#f3f4f6"
             />
+            <StatusRow
+              label="Active sections"
+              value={
+                Object.entries(sectionState)
+                  .filter(([, v]) => v)
+                  .map(([k]) => {
+                    const s = (part?.sections || []).find((ps) => ps.slot === Number(k));
+                    return s?.name || `S${k}`;
+                  })
+                  .join(", ") || "—"
+              }
+              valueColor="#1f2937"
+              valueBg="#f3f4f6"
+            />
           </Card>
 
           <Card title="Zone Actions" style={{ flex: "0 0 auto" }}>
@@ -1434,6 +1525,70 @@ export default function PartPage() {
               >
                 Clear All
               </button>
+            </div>
+          </Card>
+
+          <Card title="Sections" style={{ flex: "0 0 auto" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
+              {[1, 2, 3, 4, 5].map((slot) => {
+                const section = (part.sections || []).find((s) => s.slot === slot);
+                if (!section) {
+                  return (
+                    <button
+                      key={slot}
+                      disabled
+                      style={{
+                        padding: "8px 4px",
+                        border: "1px solid #e5e7eb",
+                        borderRadius: 10,
+                        background: "#f9fafb",
+                        color: "#d1d5db",
+                        fontSize: 13,
+                        fontWeight: 700,
+                        cursor: "not-allowed",
+                        textAlign: "center",
+                      }}
+                    >
+                      —
+                    </button>
+                  );
+                }
+                const isActive = !!sectionState[slot];
+                const isAvailable = section.orientation === effectiveOrientation;
+                const color = SLOT_COLORS[slot];
+
+                return (
+                  <button
+                    key={slot}
+                    onClick={() => toggleSection(slot)}
+                    disabled={!isAvailable || !opcConnected || autoApplyBusy}
+                    title={
+                      !opcConnected
+                        ? "OPC disconnected"
+                        : !isAvailable
+                          ? `Needs orientation ${section.orientation === 1 ? "0°" : section.orientation === 2 ? "90°" : section.orientation === 3 ? "180°" : "270°"}`
+                          : section.name
+                    }
+                    style={{
+                      padding: "8px 4px",
+                      border: `2px solid ${isActive ? color.stroke : "#d1d5db"}`,
+                      borderRadius: 10,
+                      background: isActive ? color.active : "#fff",
+                      color: isActive ? color.text : "#374151",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      cursor: isAvailable && opcConnected && !autoApplyBusy ? "pointer" : "not-allowed",
+                      opacity: isAvailable ? 1 : 0.45,
+                      textAlign: "center",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {section.name || `S${slot}`}
+                  </button>
+                );
+              })}
             </div>
           </Card>
 
@@ -1489,7 +1644,7 @@ export default function PartPage() {
               <div style={{ display: "grid", gap: 8 }}>
                 <button
                   onClick={() => {
-                    navigate(`/admin/editor/${part.part_id}/1?return=part`);
+                    navigate(`/admin/editor/${part.part_id}?return=part`);
                   }}
                   style={buttonStyle()}
                 >
@@ -1679,19 +1834,23 @@ export default function PartPage() {
   );
 }
 
-function SectionViewer({
-  section,
+function ZoneCanvas({
+  imageUrl,
+  imageSize,
+  zones,
   zoneState,
   toggleZone,
   hoveredZone,
   setHoveredZone,
   isZoneAvailable,
+  sections = [],
+  sectionState = {},
 }) {
   const containerRef = useRef(null);
   const [fitSize, setFitSize] = useState({ width: 0, height: 0 });
 
-  const sourceWidth = section.image_size?.width || 1920;
-  const sourceHeight = section.image_size?.height || 1080;
+  const sourceWidth = imageSize?.width || 1920;
+  const sourceHeight = imageSize?.height || 1080;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -1746,7 +1905,7 @@ function SectionViewer({
         }}
       >
         <img
-          src={section.image_url}
+          src={imageUrl}
           alt=""
           style={{
             position: "absolute",
@@ -1769,28 +1928,62 @@ function SectionViewer({
             height: fitSize.height,
           }}
         >
-          {section.zones.map((z) => {
+          {sections
+            .filter((s) => sectionState[s.slot])
+            .map((s) => {
+              const memberZones = (zones || []).filter((z) => s.zone_ids.includes(z.zone_id));
+              const d = unionOfZones(memberZones);
+              if (!d) return null;
+              const color = SLOT_COLORS[s.slot];
+              return (
+                <path
+                  key={`section-union-${s.slot}`}
+                  d={d}
+                  fill={color.fill}
+                  stroke={color.stroke}
+                  strokeWidth="4"
+                  style={{ pointerEvents: "none" }}
+                />
+              );
+            })}
+          {(zones || []).map((z) => {
             const active = !!zoneState[z.zone_id];
             const hovered = hoveredZone === z.zone_id;
             const available = isZoneAvailable(z);
 
-            const fill = active
-              ? "rgba(22,163,74,0.55)"
-              : !available
-                ? "rgba(107,114,128,0.10)"
-                : hovered
-                  ? "rgba(59,130,246,0.55)"
-                  : "rgba(59,130,246,0.38)";
+            // Check if this zone is locked by an active section
+            let lockedBySection = null;
+            for (const s of sections) {
+              if (sectionState[s.slot] && s.zone_ids.includes(z.zone_id)) {
+                lockedBySection = s.slot;
+                break;
+              }
+            }
 
-            const stroke = active
-              ? "#15803d"
-              : !available
-                ? "rgba(107,114,128,0.30)"
-                : hovered
-                  ? "#1d4ed8"
-                  : "#2563eb";
+            const slotColor = lockedBySection ? SLOT_COLORS[lockedBySection] : null;
 
-            const strokeWidth = active ? "3" : available ? "3" : "1.5";
+            const fill = lockedBySection
+              ? "transparent"
+              : active
+                ? "rgba(22,163,74,0.55)"
+                : !available
+                  ? "rgba(107,114,128,0.10)"
+                  : hovered
+                    ? "rgba(59,130,246,0.55)"
+                    : "rgba(59,130,246,0.38)";
+
+            const stroke = lockedBySection
+              ? slotColor.stroke
+              : active
+                ? "#15803d"
+                : !available
+                  ? "rgba(107,114,128,0.30)"
+                  : hovered
+                    ? "#1d4ed8"
+                    : "#2563eb";
+
+            const strokeWidth = lockedBySection ? "1.5" : active ? "3" : available ? "3" : "1.5";
+            const locked = !!lockedBySection || !available;
 
             return (
               <polygon
@@ -1800,13 +1993,13 @@ function SectionViewer({
                 stroke={stroke}
                 strokeWidth={strokeWidth}
                 onClick={() => {
-                  if (!available) return;
+                  if (locked) return;
                   toggleZone(z.zone_id);
                 }}
                 onMouseEnter={() => setHoveredZone(z.zone_id)}
                 onMouseLeave={() => setHoveredZone(null)}
                 style={{
-                  cursor: !available ? "not-allowed" : "pointer",
+                  cursor: locked ? "not-allowed" : "pointer",
                   transition: "fill 0.12s ease, stroke 0.12s ease",
                 }}
               />

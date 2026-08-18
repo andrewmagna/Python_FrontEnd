@@ -19,17 +19,6 @@ def invalidate_scan_cache() -> None:
     _scan_parts_cache = None
 
 
-def _discover_existing_sections(sections_dir: Path) -> List[int]:
-    existing: List[int] = []
-
-    for i in range(1, 5):
-        clean_path = sections_dir / f"section{i}_clean.png"
-        if clean_path.exists():
-            existing.append(i)
-
-    return existing
-
-
 def read_image_size(image_path: Path) -> Dict[str, int]:
     default_size = {"width": 1920, "height": 1080}
 
@@ -80,34 +69,55 @@ def _normalize_zones(zones: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return normalized
 
 
-def _load_section_zone_payload(
-    zones_file: Path, clean_image_path: Path
-) -> Dict[str, Any]:
-    image_size = read_image_size(clean_image_path)
+def _normalize_section(section: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(section, dict):
+        return None
+    slot = section.get("slot")
+    if not isinstance(slot, int) or slot < 1 or slot > 5:
+        return None
+    name = str(section.get("name") or "")
+    zone_ids = section.get("zone_ids", [])
+    if not isinstance(zone_ids, list):
+        return None
+    valid_ids = sorted({z for z in zone_ids if isinstance(z, int) and 1 <= z <= 35})
+    if len(valid_ids) < 2:
+        return None
+    orientation = section.get("orientation")
+    if orientation not in (1, 2, 3, 4):
+        return None
+    return {"slot": slot, "name": name, "zone_ids": valid_ids, "orientation": orientation}
+
+
+def _normalize_sections(sections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    result: List[Dict[str, Any]] = []
+    seen_slots: set = set()
+    for s in sections:
+        norm = _normalize_section(s)
+        if norm is None:
+            continue
+        if norm["slot"] in seen_slots:
+            continue
+        seen_slots.add(norm["slot"])
+        result.append(norm)
+    return sorted(result, key=lambda s: s["slot"])
+
+
+def _load_zones(zones_file: Path, image_path: Path) -> Dict[str, Any]:
+    image_size = read_image_size(image_path)
     zones: List[Dict[str, Any]] = []
+    sections: List[Dict[str, Any]] = []
 
     if not zones_file.exists():
-        return {
-            "zones": zones,
-            "image_size": image_size,
-            "has_zones": False,
-        }
+        return {"zones": zones, "sections": sections, "image_size": image_size, "has_zones": False}
 
     try:
         data = json.loads(zones_file.read_text(encoding="utf-8"))
         zones = _normalize_zones(data.get("zones", []))
+        sections = _normalize_sections(data.get("sections", []))
         image_size = data.get("image_size", image_size)
-        return {
-            "zones": zones,
-            "image_size": image_size,
-            "has_zones": len(zones) > 0,
-        }
+        return {"zones": zones, "sections": sections, "image_size": image_size, "has_zones": len(zones) > 0}
     except Exception:
-        return {
-            "zones": [],
-            "image_size": image_size,
-            "has_zones": False,
-        }
+        return {"zones": [], "sections": [], "image_size": image_size, "has_zones": False}
 
 
 def get_part(part_id: str) -> Dict[str, Any]:
@@ -115,49 +125,23 @@ def get_part(part_id: str) -> Dict[str, Any]:
     root = Path(cfg.parts_root)
 
     part_dir = root / part_id
-    sections_dir = part_dir / "sections"
-    zones_dir = part_dir / "zones"
+    image_path = part_dir / "part.png"
+    overlay_path = part_dir / "overlay.png"
+    zones_file = part_dir / "zones.json"
 
-    sections: List[Dict[str, Any]] = []
-    missing_zones_sections: List[int] = []
-
-    existing_sections = _discover_existing_sections(sections_dir)
-
-    for i in existing_sections:
-        clean_path = sections_dir / f"section{i}_clean.png"
-        overlay_path = sections_dir / f"section{i}_overlay.png"
-        zones_file = zones_dir / f"section{i}.json"
-
-        zone_payload = _load_section_zone_payload(zones_file, clean_path)
-
-        if not zone_payload["has_zones"]:
-            missing_zones_sections.append(i)
-
-        sections.append(
-            {
-                "index": i,
-                "image_url": f"/parts/{part_id}/sections/section{i}_clean.png",
-                "overlay_url": (
-                    f"/parts/{part_id}/sections/section{i}_overlay.png"
-                    if overlay_path.exists()
-                    else None
-                ),
-                "zones": zone_payload["zones"],
-                "image_size": zone_payload["image_size"],
-                "has_zones": zone_payload["has_zones"],
-                "has_overlay": overlay_path.exists(),
-            }
-        )
-
-    configured = len(existing_sections) > 0 and len(missing_zones_sections) == 0
+    zone_payload = _load_zones(zones_file, image_path)
+    configured = image_path.exists() and zone_payload["has_zones"]
 
     return {
         "part_id": part_id,
         "display_name": part_id.replace("_", " "),
         "configured": configured,
-        "missing_zones_sections": missing_zones_sections,
-        "sections": sections,
-        "section_count": len(sections),
+        "image_url": f"/parts/{part_id}/part.png",
+        "overlay_url": f"/parts/{part_id}/overlay.png" if overlay_path.exists() else None,
+        "has_overlay": overlay_path.exists(),
+        "image_size": zone_payload["image_size"],
+        "zones": zone_payload["zones"],
+        "sections": zone_payload["sections"],
     }
 
 
@@ -180,39 +164,27 @@ def scan_parts() -> List[Dict[str, Any]]:
         if not part_dir.is_dir():
             continue
 
-        thumb = part_dir / "thumb.png"
-        if not thumb.exists():
+        image_path = part_dir / "part.png"
+        if not image_path.exists():
             continue
 
         part_id = part_dir.name
-        display_name = part_id.replace("_", " ")
+        zones_file = part_dir / "zones.json"
+        has_zones = False
 
-        sections_dir = part_dir / "sections"
-        zones_dir = part_dir / "zones"
-
-        existing_sections = _discover_existing_sections(sections_dir)
-        missing_zones_sections: List[int] = []
-
-        for i in existing_sections:
-            clean_path = sections_dir / f"section{i}_clean.png"
-            zone_file = zones_dir / f"section{i}.json"
-
-            zone_payload = _load_section_zone_payload(zone_file, clean_path)
-
-            if not zone_payload["has_zones"]:
-                missing_zones_sections.append(i)
-
-        configured = len(existing_sections) > 0 and len(missing_zones_sections) == 0
+        if zones_file.exists():
+            try:
+                data = json.loads(zones_file.read_text(encoding="utf-8"))
+                has_zones = len(_normalize_zones(data.get("zones", []))) > 0
+            except Exception:
+                pass
 
         parts.append(
             {
                 "part_id": part_id,
-                "display_name": display_name,
-                "thumb_url": f"/parts/{part_id}/thumb.png",
-                "sections": existing_sections,
-                "section_count": len(existing_sections),
-                "configured": configured,
-                "missing_zones_sections": missing_zones_sections,
+                "display_name": part_id.replace("_", " "),
+                "image_url": f"/parts/{part_id}/part.png",
+                "configured": has_zones,
             }
         )
 

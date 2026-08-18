@@ -130,7 +130,7 @@ export default function App() {
               }
             />
             <Route
-              path="/admin/editor/:partId/:sectionIndex"
+              path="/admin/editor/:partId"
               element={
                 <ProtectedRoute session={session}>
                   <AdminEditor />

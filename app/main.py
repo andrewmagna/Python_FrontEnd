@@ -50,7 +50,7 @@ from app.opc_service import (
     get_program_tags,
 )
 from app.overlay_import import import_polygons_from_overlay
-from app.parts_service import get_part, scan_parts, invalidate_scan_cache, read_image_size, _discover_existing_sections as _discover_sections_from_parts
+from app.parts_service import get_part, scan_parts, invalidate_scan_cache, read_image_size
 
 
 def _hash_password(password: str) -> tuple[str, str]:
@@ -170,6 +170,7 @@ class ConfigUpdateRequest(BaseModel):
 class ApplyRequest(BaseModel):
     part_id: str
     zones: dict
+    sections: list = []
 
 
 class WritePathsRequest(BaseModel):
@@ -186,18 +187,11 @@ class AdminLoginRequest(BaseModel):
     password: str
 
 
-class EditorSectionResponse(BaseModel):
-    part_id: str
-    section_index: int
-    image_url: str
-    image_size: dict
-    zones: list
-
-
 class EditorSaveRequest(BaseModel):
     image: str
     image_size: dict
     zones: list
+    sections: list = []
 
 
 class SaveRecipeRequest(BaseModel):
@@ -205,16 +199,18 @@ class SaveRecipeRequest(BaseModel):
     description: Optional[str] = None
     paths: list
     zones: dict
+    sections: list = []
 
 
 class LoadRecipeRequest(BaseModel):
     recipe_id: int
-    
+
 class UpdateRecipeRequest(BaseModel):
     name: str
     description: Optional[str] = None
     paths: list
     zones: dict
+    sections: list = []
 
 class SaveLastStateRequest(BaseModel):
     orientation: Optional[int] = None
@@ -222,6 +218,7 @@ class SaveLastStateRequest(BaseModel):
     paths: list
     selected_recipe_id: Optional[int] = None
     saved_at: Optional[int] = None
+    sections: list = []
     
 class RFIDLoginRequest(BaseModel):
     card_id: str
@@ -231,17 +228,6 @@ class UserUpsertRequest(BaseModel):
     display_name: str
     role: str
     card_id: str
-
-def _discover_existing_sections(part_dir: Path) -> list[int]:
-    return _discover_sections_from_parts(part_dir / "sections")
-
-
-def _ensure_existing_section(part_dir: Path, section_index: int) -> Path:
-    image_path = part_dir / "sections" / f"section{section_index}_clean.png"
-    if not image_path.exists():
-        raise HTTPException(status_code=404, detail=f"Section {section_index} image not found")
-    return image_path
-
 
 
 
@@ -476,11 +462,45 @@ def apply(req: ApplyRequest):
     if not is_connected():
         raise HTTPException(status_code=500, detail="OPC UA not connected")
 
-    write_zones(req.part_id, req.zones)
-    zone_ids = [i for i in range(1, 41) if req.zones.get(i) or req.zones.get(str(i))]
+    part = get_part(req.part_id)
+
+    # Normalize active section slots (1..5)
+    active_slots = {s for s in req.sections if isinstance(s, int) and 1 <= s <= 5}
+
+    # Build a lookup of part sections by slot
+    part_sections = {s["slot"]: s for s in part.get("sections", [])}
+
+    # D8: validate each requested active slot exists on part and matches table orientation
+    if active_slots:
+        current_orientation = get_table_orientation()
+        if current_orientation not in (1, 2, 3, 4):
+            raise HTTPException(
+                status_code=400,
+                detail="Sections cannot be applied because the table orientation is unavailable",
+            )
+        for slot in sorted(active_slots):
+            if slot not in part_sections:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Section slot {slot} is not defined for part '{req.part_id}'",
+                )
+            section = part_sections[slot]
+            if section["orientation"] != current_orientation:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Section slot {slot} requires orientation {section['orientation']} "
+                        f"but table is at orientation {current_orientation}"
+                    ),
+                )
+
+    full_map = _compose_full_zone_map(req.zones, active_slots, part_sections)
+
+    write_zones(req.part_id, full_map)
+    zone_ids = [i for i in range(1, 41) if full_map.get(i) or full_map.get(str(i))]
     write_zone_list(zone_ids)
     write_recipe_name("")
-    log_apply(req.part_id, req.zones)
+    log_apply(req.part_id, full_map)
 
     return {"status": "ok"}
 
@@ -554,47 +574,6 @@ def select_part_endpoint(req: SelectPartRequest):
     return {"status": "ok"}
 
 
-def load_section_zones(zones_path: Path) -> list[dict[str, Any]]:
-    if not zones_path.exists():
-        return []
-
-    try:
-        data = json.loads(zones_path.read_text(encoding="utf-8"))
-        zones = data.get("zones", [])
-        return [z for z in zones if isinstance(z, dict)]
-    except Exception:
-        return []
-
-
-def collect_part_zone_ids(part_dir: Path, exclude_section_index: int | None = None) -> dict[str, Any]:
-    zones_dir = part_dir / "zones"
-    used_ids: set[int] = set()
-    by_section: dict[int, list[int]] = {}
-
-    existing_sections = _discover_existing_sections(part_dir)
-
-    for i in existing_sections:
-        if exclude_section_index is not None and i == exclude_section_index:
-            continue
-
-        section_file = zones_dir / f"section{i}.json"
-        zones = load_section_zones(section_file)
-        ids: list[int] = []
-
-        for z in zones:
-            zone_id = z.get("zone_id")
-            if isinstance(zone_id, int):
-                ids.append(zone_id)
-                used_ids.add(zone_id)
-
-        if ids:
-            by_section[i] = sorted(ids)
-
-    return {
-        "used_ids": sorted(used_ids),
-        "by_section": by_section,
-    }
-    
 def _recipe_file(part_id: str) -> Path:
     return RECIPES_ROOT / f"{part_id}.json"
 
@@ -649,6 +628,28 @@ def _zone_ids_from_zone_map(zones: dict[str, Any] | dict[int, Any]) -> list[int]
     return zone_ids
 
 
+def _compose_full_zone_map(
+    zones: dict,
+    active_slots: set,
+    part_sections: dict,
+) -> dict:
+    """Build the full zone bit-map including section slot bits."""
+    full_map: dict = dict(zones)
+    for slot in range(1, 6):
+        slot_id = 35 + slot  # slot 1 -> Zone_36, ..., slot 5 -> Zone_40
+        section = part_sections.get(slot)
+        if section and slot in active_slots:
+            for zid in section["zone_ids"]:
+                full_map[str(zid)] = False
+                full_map[zid] = False
+            full_map[str(slot_id)] = True
+            full_map[slot_id] = True
+        else:
+            full_map[str(slot_id)] = False
+            full_map[slot_id] = False
+    return full_map
+
+
 def _valid_zone_ids_for_orientation(part_id: str, orientation: Optional[int]) -> set[int]:
     if orientation not in (1, 2, 3, 4):
         return set()
@@ -656,14 +657,13 @@ def _valid_zone_ids_for_orientation(part_id: str, orientation: Optional[int]) ->
     part = get_part(part_id)
     valid_ids: set[int] = set()
 
-    for section in part.get("sections", []):
-        for zone in section.get("zones", []):
-            if (
-                isinstance(zone, dict)
-                and isinstance(zone.get("zone_id"), int)
-                and zone.get("orientation") == orientation
-            ):
-                valid_ids.add(zone["zone_id"])
+    for zone in part.get("zones", []):
+        if (
+            isinstance(zone, dict)
+            and isinstance(zone.get("zone_id"), int)
+            and zone.get("orientation") == orientation
+        ):
+            valid_ids.add(zone["zone_id"])
 
     return valid_ids
 
@@ -741,8 +741,8 @@ def _recipe_id_matches(recipe: dict[str, Any], recipe_id: int) -> bool:
 
 
 
-@app.get("/api/editor/parts/{part_id}/sections/{section_index}", dependencies=[Depends(supervisor_or_admin_dep)])
-def editor_get_section(part_id: str, section_index: int):
+@app.get("/api/editor/parts/{part_id}", dependencies=[Depends(supervisor_or_admin_dep)])
+def editor_get_part(part_id: str):
     cfg = load_config()
     root = Path(cfg.parts_root)
 
@@ -750,56 +750,67 @@ def editor_get_section(part_id: str, section_index: int):
     if not part_dir.exists():
         raise HTTPException(status_code=404, detail="Part not found")
 
-    image_path = _ensure_existing_section(part_dir, section_index)
-    zones_path = part_dir / "zones" / f"section{section_index}.json"
+    image_path = part_dir / "part.png"
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail="part.png not found")
 
-    zones_payload = {
-        "image": image_path.name,
-        "image_size": read_image_size(image_path),
-        "zones": [],
-    }
+    zones_path = part_dir / "zones.json"
+    zones: list[dict[str, Any]] = []
+    sections: list[dict[str, Any]] = []
+    image_size = read_image_size(image_path)
 
     if zones_path.exists():
         try:
             loaded = json.loads(zones_path.read_text(encoding="utf-8"))
             raw_zones = loaded.get("zones", [])
-            zones_payload = {
-                "image": loaded.get("image", image_path.name),
-                "image_size": loaded.get("image_size", read_image_size(image_path)),
-                "zones": [
-                    _normalize_zone_for_response(z)
-                    for z in raw_zones
-                    if isinstance(z, dict)
-                ],
-            }
+            zones = [
+                _normalize_zone_for_response(z)
+                for z in raw_zones
+                if isinstance(z, dict)
+            ]
+            image_size = loaded.get("image_size", image_size)
+            # Load sections
+            for s in loaded.get("sections", []):
+                if not isinstance(s, dict):
+                    continue
+                slot = s.get("slot")
+                if not isinstance(slot, int) or slot < 1 or slot > 5:
+                    continue
+                zone_ids = s.get("zone_ids", [])
+                valid_ids = sorted({z for z in zone_ids if isinstance(z, int) and 1 <= z <= 35})
+                if len(valid_ids) < 2:
+                    continue
+                orientation = s.get("orientation")
+                if orientation not in (1, 2, 3, 4):
+                    continue
+                sections.append({
+                    "slot": slot,
+                    "name": str(s.get("name") or ""),
+                    "zone_ids": valid_ids,
+                    "orientation": orientation,
+                })
+            sections.sort(key=lambda x: x["slot"])
         except Exception:
             pass
 
-    part_usage = collect_part_zone_ids(part_dir, exclude_section_index=section_index)
-    current_section_ids = sorted(
-        [
-            z.get("zone_id")
-            for z in zones_payload.get("zones", [])
-            if isinstance(z.get("zone_id"), int)
-        ]
+    used_zone_ids = sorted(
+        z.get("zone_id") for z in zones if isinstance(z.get("zone_id"), int)
     )
 
     mtime = int(image_path.stat().st_mtime)
 
     return {
         "part_id": part_id,
-        "section_index": section_index,
-        "image_url": f"/parts/{part_id}/sections/section{section_index}_clean.png?v={mtime}",
-        "image_size": zones_payload.get("image_size", read_image_size(image_path)),
-        "zones": zones_payload.get("zones", []),
-        "part_used_zone_ids_other_sections": part_usage["used_ids"],
-        "section_used_zone_ids": current_section_ids,
-        "zone_ids_by_other_section": part_usage["by_section"],
+        "image_url": f"/parts/{part_id}/part.png?v={mtime}",
+        "image_size": image_size,
+        "zones": zones,
+        "sections": sections,
+        "used_zone_ids": used_zone_ids,
     }
 
 
-@app.post("/api/editor/parts/{part_id}/sections/{section_index}", dependencies=[Depends(supervisor_or_admin_dep)])
-def editor_save_section(part_id: str, section_index: int, req: EditorSaveRequest):
+@app.post("/api/editor/parts/{part_id}", dependencies=[Depends(supervisor_or_admin_dep)])
+def editor_save_part(part_id: str, req: EditorSaveRequest):
     cfg = load_config()
     root = Path(cfg.parts_root)
 
@@ -807,11 +818,11 @@ def editor_save_section(part_id: str, section_index: int, req: EditorSaveRequest
     if not part_dir.exists():
         raise HTTPException(status_code=404, detail="Part not found")
 
-    image_path = _ensure_existing_section(part_dir, section_index)
+    image_path = part_dir / "part.png"
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail="part.png not found")
 
-    zones_dir = part_dir / "zones"
-    zones_dir.mkdir(parents=True, exist_ok=True)
-    zones_path = zones_dir / f"section{section_index}.json"
+    zones_path = part_dir / "zones.json"
 
     current_ids: list[int] = []
     cleaned_zones: list[dict[str, Any]] = []
@@ -827,10 +838,10 @@ def editor_save_section(part_id: str, section_index: int, req: EditorSaveRequest
         if not isinstance(zone_id, int):
             raise HTTPException(status_code=400, detail="Each zone must have an integer zone_id")
 
-        if zone_id < 1 or zone_id > 40:
+        if zone_id < 1 or zone_id > 35:
             raise HTTPException(
                 status_code=400,
-                detail=f"Zone ID {zone_id} is out of range (1..40)",
+                detail=f"Zone ID {zone_id} is out of range (1..35). IDs 36..40 are reserved for zone sections.",
             )
 
         if not isinstance(points, list) or len(points) < 3:
@@ -869,22 +880,70 @@ def editor_save_section(part_id: str, section_index: int, req: EditorSaveRequest
         )
 
     if len(current_ids) != len(set(current_ids)):
-        raise HTTPException(status_code=400, detail="Duplicate zone IDs exist within this section")
+        raise HTTPException(status_code=400, detail="Duplicate zone IDs within zones.json")
 
-    part_usage = collect_part_zone_ids(part_dir, exclude_section_index=section_index)
-    other_used_ids = set(part_usage["used_ids"])
-    conflicts = sorted(set(current_ids).intersection(other_used_ids))
+    # Validate and clean sections
+    cleaned_sections: list[dict[str, Any]] = []
+    seen_section_slots: set[int] = set()
+    zone_id_set = set(current_ids)
 
-    if conflicts:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Zone IDs already used in other sections of this part: {conflicts}",
-        )
+    for s in req.sections:
+        if not isinstance(s, dict):
+            raise HTTPException(status_code=400, detail="Each section must be an object")
+        slot = s.get("slot")
+        if not isinstance(slot, int) or slot < 1 or slot > 5:
+            raise HTTPException(status_code=400, detail="Section slot must be 1..5")
+        if slot in seen_section_slots:
+            raise HTTPException(status_code=400, detail=f"Duplicate section slot {slot}")
+        seen_section_slots.add(slot)
+
+        name = str(s.get("name") or "")
+        raw_ids = s.get("zone_ids", [])
+        valid_ids = sorted({z for z in raw_ids if isinstance(z, int) and 1 <= z <= 35})
+        if len(valid_ids) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Section slot {slot} must have at least 2 zone IDs in range 1..35",
+            )
+
+        orientation = s.get("orientation")
+        if orientation not in (1, 2, 3, 4):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Section slot {slot} has invalid orientation",
+            )
+
+        # All member zones must exist and share the same orientation
+        for zid in valid_ids:
+            if zid not in zone_id_set:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Section slot {slot} references zone {zid} which doesn't exist in zones",
+                )
+            zone_obj = next((z for z in cleaned_zones if z["zone_id"] == zid), None)
+            if zone_obj and zone_obj.get("orientation") != orientation:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Section slot {slot} orientation {orientation} doesn't match "
+                        f"zone {zid} orientation {zone_obj.get('orientation')}"
+                    ),
+                )
+
+        cleaned_sections.append({
+            "slot": slot,
+            "name": name,
+            "zone_ids": valid_ids,
+            "orientation": orientation,
+        })
+
+    cleaned_sections.sort(key=lambda x: x["slot"])
 
     payload = {
-        "image": req.image or image_path.name,
+        "image": "part.png",
         "image_size": req.image_size or read_image_size(image_path),
         "zones": cleaned_zones,
+        "sections": cleaned_sections,
     }
 
     zones_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -893,8 +952,8 @@ def editor_save_section(part_id: str, section_index: int, req: EditorSaveRequest
     return {"ok": True}
 
 
-@app.post("/api/editor/parts/{part_id}/sections/{section_index}/import", dependencies=[Depends(supervisor_or_admin_dep)])
-def editor_import_overlay(part_id: str, section_index: int):
+@app.post("/api/editor/parts/{part_id}/import", dependencies=[Depends(supervisor_or_admin_dep)])
+def editor_import_overlay(part_id: str):
     cfg = load_config()
     root = Path(cfg.parts_root)
 
@@ -902,15 +961,18 @@ def editor_import_overlay(part_id: str, section_index: int):
     if not part_dir.exists():
         raise HTTPException(status_code=404, detail="Part not found")
 
-    overlay_path = part_dir / "sections" / f"section{section_index}_overlay.png"
-    clean_path = _ensure_existing_section(part_dir, section_index)
+    overlay_path = part_dir / "overlay.png"
+    clean_path = part_dir / "part.png"
+
+    if not clean_path.exists():
+        raise HTTPException(status_code=404, detail="part.png not found")
 
     try:
         result = import_polygons_from_overlay(overlay_path, clean_path=clean_path)
 
         clean_img = cv2.imread(str(clean_path), cv2.IMREAD_COLOR)
         if clean_img is None:
-            raise HTTPException(status_code=500, detail="Failed to load clean section image")
+            raise HTTPException(status_code=500, detail="Failed to load part image")
 
         clean_height, clean_width = clean_img.shape[:2]
 
@@ -963,6 +1025,7 @@ def get_last_state(part_id: str):
         "zones": {},
         "paths": [],
         "selected_recipe_id": None,
+        "sections": [],
     }
 
 
@@ -981,30 +1044,53 @@ def save_last_state(part_id: str, req: SaveLastStateRequest):
         "zones": req.zones if isinstance(req.zones, dict) else {},
         "paths": req.paths if isinstance(req.paths, list) else [],
         "selected_recipe_id": req.selected_recipe_id,
+        "sections": [s for s in req.sections if isinstance(s, int) and 1 <= s <= 5],
         "saved_at": incoming_saved_at,
     }
     _save_last_state(part_id, payload)
     return {"ok": True}
 
 def _validate_recipe_zones(part_id: str, zones: dict) -> None:
-    """Raise HTTP 400 if zones contains IDs not present in any section of the part."""
-    cfg = load_config()
-    part_dir = Path(cfg.parts_root) / part_id
-    if part_dir.exists():
-        usage = collect_part_zone_ids(part_dir)
-        valid_ids = set(usage["used_ids"])
-        recipe_zone_ids = [i for i in range(1, 41) if zones.get(i) or zones.get(str(i))]
-        invalid = sorted(z for z in recipe_zone_ids if z not in valid_ids)
-        if invalid:
+    """Raise HTTP 400 if zones contains IDs not present in the part's zones.json or uses reserved IDs 36..40."""
+    # Reject section slot IDs (36..40) in recipe zone maps
+    for i in range(36, 41):
+        if zones.get(i) or zones.get(str(i)):
             raise HTTPException(
                 status_code=400,
-                detail=f"Zone IDs not valid for part '{part_id}': {invalid}",
+                detail=f"Zone ID {i} is reserved for section slots and cannot be stored in recipe zones",
+            )
+
+    part = get_part(part_id)
+    valid_ids = {z["zone_id"] for z in part.get("zones", []) if isinstance(z.get("zone_id"), int) and 1 <= z["zone_id"] <= 35}
+    recipe_zone_ids = [i for i in range(1, 36) if zones.get(i) or zones.get(str(i))]
+    invalid = sorted(z for z in recipe_zone_ids if z not in valid_ids)
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Zone IDs not valid for part '{part_id}': {invalid}",
+        )
+
+
+def _validate_recipe_sections(part_id: str, sections: list) -> None:
+    """Raise HTTP 400 if recipe sections reference slots not defined for the part."""
+    if not sections:
+        return
+    part = get_part(part_id)
+    part_section_slots = {s["slot"] for s in part.get("sections", [])}
+    for slot in sections:
+        if not isinstance(slot, int) or slot < 1 or slot > 5:
+            raise HTTPException(status_code=400, detail=f"Invalid section slot: {slot}")
+        if slot not in part_section_slots:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Section slot {slot} is not defined for part '{part_id}'",
             )
 
 
 @app.post("/api/recipes/{part_id}/save", dependencies=[Depends(supervisor_or_admin_dep)])
 def save_recipe(part_id: str, req: SaveRecipeRequest, request: Request):
     _validate_recipe_zones(part_id, req.zones)
+    _validate_recipe_sections(part_id, req.sections)
     existing = _load_recipe_list(part_id)
 
     next_id = max(
@@ -1018,6 +1104,7 @@ def save_recipe(part_id: str, req: SaveRecipeRequest, request: Request):
         "description": req.description,
         "paths": req.paths,
         "zones": req.zones,
+        "sections": [s for s in req.sections if isinstance(s, int) and 1 <= s <= 5],
         "created_by": _current_user_name(request),
         "created_by_role": _current_user_role(request),
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -1061,9 +1148,32 @@ def load_recipe(part_id: str, req: LoadRecipeRequest):
     if not is_connected():
         raise HTTPException(status_code=409, detail="OPC not connected")
 
+    # D9: handle recipe sections — validate and build full zone map with slot bits
+    recipe_section_slots = {s for s in recipe.get("sections", []) if isinstance(s, int) and 1 <= s <= 5}
+    part = get_part(part_id)
+    part_sections = {s["slot"]: s for s in part.get("sections", [])}
+
+    for slot in recipe_section_slots:
+        if slot not in part_sections:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Recipe references section slot {slot} which is not defined for part '{part_id}'",
+            )
+        section = part_sections[slot]
+        if section["orientation"] != current_orientation:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Recipe section slot {slot} requires orientation {section['orientation']} "
+                    f"but table is at orientation {current_orientation}"
+                ),
+            )
+
+    full_map = _compose_full_zone_map(recipe.get("zones", {}), recipe_section_slots, part_sections)
+
     write_paths(recipe.get("paths", []))
-    write_zones(part_id, recipe.get("zones", {}))
-    zone_ids = _zone_ids_from_zone_map(recipe.get("zones", {}))
+    write_zones(part_id, full_map)
+    zone_ids = [i for i in range(1, 41) if full_map.get(i) or full_map.get(str(i))]
     write_zone_list(zone_ids)
     write_recipe_name(str(recipe.get("name") or ""))
 
@@ -1072,6 +1182,7 @@ def load_recipe(part_id: str, req: LoadRecipeRequest):
 @app.put("/api/admin/recipes/{part_id}/{recipe_id}", dependencies=[Depends(supervisor_or_admin_dep)])
 def update_recipe(part_id: str, recipe_id: int, req: UpdateRecipeRequest):
     _validate_recipe_zones(part_id, req.zones)
+    _validate_recipe_sections(part_id, req.sections)
     recipes = _load_recipe_list(part_id)
 
     updated_recipe = None
@@ -1081,6 +1192,7 @@ def update_recipe(part_id: str, recipe_id: int, req: UpdateRecipeRequest):
             recipe["description"] = req.description
             recipe["paths"] = req.paths
             recipe["zones"] = req.zones
+            recipe["sections"] = [s for s in req.sections if isinstance(s, int) and 1 <= s <= 5]
             updated_recipe = recipe
             break
 
@@ -1089,6 +1201,9 @@ def update_recipe(part_id: str, recipe_id: int, req: UpdateRecipeRequest):
 
     _save_recipe_list(part_id, recipes)
     return {"ok": True, "recipe": updated_recipe}
+
+
+
 
 
 @app.delete("/api/admin/recipes/{part_id}/{recipe_id}", dependencies=[Depends(supervisor_or_admin_dep)])
