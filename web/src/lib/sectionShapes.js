@@ -1,5 +1,18 @@
 import polygonClipping from "polygon-clipping";
 
+function dilatePolygon(points, amount = 4) {
+  const n = points.length;
+  if (n === 0) return points;
+  const cx = points.reduce((s, p) => s + Number(p[0]), 0) / n;
+  const cy = points.reduce((s, p) => s + Number(p[1]), 0) / n;
+  return points.map((p) => {
+    const dx = Number(p[0]) - cx;
+    const dy = Number(p[1]) - cy;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    return [Number(p[0]) + (dx / len) * amount, Number(p[1]) + (dy / len) * amount];
+  });
+}
+
 function toClosedRing(points) {
   const ring = points.map((p) => [Number(p[0]), Number(p[1])]);
   if (
@@ -42,7 +55,7 @@ export function unionOfZones(zoneObjects) {
   }
 
   try {
-    const polys = validZones.map((z) => [toClosedRing(z.points)]);
+    const polys = validZones.map((z) => [toClosedRing(dilatePolygon(z.points))]);
     const result = polygonClipping.union(...polys);
     return multiPolygonToSvgPath(result);
   } catch {

@@ -2373,15 +2373,6 @@ function SectionsPanel({
         >
           <div style={{ marginBottom: 8 }}>
             <label style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", display: "block", marginBottom: 4 }}>
-              SLOT (auto-assigned)
-            </label>
-            <div style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid #e5e7eb", background: "#f9fafb", fontSize: 13, color: "#374151" }}>
-              Slot {sectionEditSlot} → Zone_{35 + sectionEditSlot}_CMD
-            </div>
-          </div>
-
-          <div style={{ marginBottom: 8 }}>
-            <label style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", display: "block", marginBottom: 4 }}>
               NAME
             </label>
             <input
@@ -2479,9 +2470,6 @@ function SectionsPanel({
                 </div>
                 <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
                   {getOrientationLabel(s.orientation)} · Zones: {s.zone_ids.join(", ")}
-                </div>
-                <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 1 }}>
-                  → Zone_{35 + s.slot}_CMD
                 </div>
               </div>
               <div style={{ display: "flex", gap: 4 }}>

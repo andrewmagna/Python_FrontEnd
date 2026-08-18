@@ -20,7 +20,6 @@ _shift_start_time_node = None
 _shift_end_time_node = None
 _shift_completed_node = None
 _shift_started_node = None
-_zone_section_toggle_node = None
 _force_reading_node = None
 _program_started_node = None
 _cycle_started_node = None
@@ -60,7 +59,7 @@ def _post_connect_setup() -> None:
 
 
 def connect():
-    global client, connected, _objects_node, _orientation_node, _part_name_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _shift_started_node, _zone_section_toggle_node, _force_reading_node, _program_started_node, _cycle_started_node, _cycle_completed_node, _opc_status_node, _path_pass_nodes, _path_grit_nodes, _path_force_nodes, _zone_command_nodes, _logged_missing_nodes, _browse_name_index, _index_built
+    global client, connected, _objects_node, _orientation_node, _part_name_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _shift_started_node, _force_reading_node, _program_started_node, _cycle_started_node, _cycle_completed_node, _opc_status_node, _path_pass_nodes, _path_grit_nodes, _path_force_nodes, _zone_command_nodes, _logged_missing_nodes, _browse_name_index, _index_built
 
     load_config()
 
@@ -86,7 +85,6 @@ def connect():
     _shift_end_time_node = None
     _shift_completed_node = None
     _shift_started_node = None
-    _zone_section_toggle_node = None
     _force_reading_node = None
     _program_started_node = None
     _cycle_started_node = None
@@ -130,7 +128,6 @@ def connect():
         _shift_end_time_node = None
         _shift_completed_node = None
         _shift_started_node = None
-        _zone_section_toggle_node = None
         _force_reading_node = None
         _opc_status_node = None
         _path_pass_nodes = {}
@@ -259,7 +256,7 @@ def _default_paths():
 
 
 def _get_cached_node(cache_name: str, target_name: str):
-    global _orientation_node, _part_name_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _shift_started_node, _zone_section_toggle_node, _force_reading_node, _program_started_node, _cycle_started_node, _cycle_completed_node, _opc_status_node
+    global _orientation_node, _part_name_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _shift_started_node, _force_reading_node, _program_started_node, _cycle_started_node, _cycle_completed_node, _opc_status_node
 
     _require_connection()
 
@@ -289,9 +286,6 @@ def _get_cached_node(cache_name: str, target_name: str):
 
     if cache_name == "shift_started" and _shift_started_node is not None:
         return _shift_started_node
-
-    if cache_name == "zone_section_toggle" and _zone_section_toggle_node is not None:
-        return _zone_section_toggle_node
 
     if cache_name == "force_reading" and _force_reading_node is not None:
         return _force_reading_node
@@ -332,8 +326,6 @@ def _get_cached_node(cache_name: str, target_name: str):
         _shift_completed_node = node
     elif cache_name == "shift_started":
         _shift_started_node = node
-    elif cache_name == "zone_section_toggle":
-        _zone_section_toggle_node = node
     elif cache_name == "force_reading":
         _force_reading_node = node
     elif cache_name == "program_started":
@@ -757,17 +749,6 @@ def write_shift_started(value: int):
         return
 
     _set_node_value(node, int(value), "Shift_Started")
-
-
-def write_zone_section_toggle(value: bool):
-    _require_connection()
-
-    node = _get_cached_node("zone_section_toggle", "Zone_Section_Toggle")
-    if node is None:
-        print("Skipping missing OPC node: Zone_Section_Toggle")
-        return
-
-    _set_node_value(node, bool(value), "Zone_Section_Toggle")
 
 
 _reconnect_stop = threading.Event()

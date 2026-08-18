@@ -46,7 +46,6 @@ from app.opc_service import (
     write_shift_end_time,
     write_shift_completed,
     write_shift_started,
-    write_zone_section_toggle,
     get_program_tags,
 )
 from app.overlay_import import import_polygons_from_overlay
@@ -219,6 +218,7 @@ class SaveLastStateRequest(BaseModel):
     selected_recipe_id: Optional[int] = None
     saved_at: Optional[int] = None
     sections: list = []
+    section_sources: dict = {}
     
 class RFIDLoginRequest(BaseModel):
     card_id: str
@@ -502,16 +502,6 @@ def apply(req: ApplyRequest):
     write_recipe_name("")
     log_apply(req.part_id, full_map)
 
-    return {"status": "ok"}
-
-
-@app.post("/api/opc/zone-section-toggle", dependencies=[Depends(any_user_dep)])
-def zone_section_toggle_endpoint(req: dict):
-    if not is_connected():
-        raise HTTPException(status_code=500, detail="OPC UA not connected")
-
-    value = bool(req.get("value", False))
-    write_zone_section_toggle(value)
     return {"status": "ok"}
 
 
@@ -1026,6 +1016,7 @@ def get_last_state(part_id: str):
         "paths": [],
         "selected_recipe_id": None,
         "sections": [],
+        "section_sources": {},
     }
 
 
@@ -1038,6 +1029,12 @@ def save_last_state(part_id: str, req: SaveLastStateRequest):
     if incoming_saved_at < existing_saved_at:
         return {"ok": True, "ignored": True}
 
+    valid_sources = {"manual", "auto"}
+    section_sources = {
+        str(k): v
+        for k, v in req.section_sources.items()
+        if str(k) in {"1", "2", "3", "4", "5"} and v in valid_sources
+    }
     payload = {
         "part_id": part_id,
         "orientation": req.orientation if req.orientation in (1, 2, 3, 4) else None,
@@ -1045,6 +1042,7 @@ def save_last_state(part_id: str, req: SaveLastStateRequest):
         "paths": req.paths if isinstance(req.paths, list) else [],
         "selected_recipe_id": req.selected_recipe_id,
         "sections": [s for s in req.sections if isinstance(s, int) and 1 <= s <= 5],
+        "section_sources": section_sources,
         "saved_at": incoming_saved_at,
     }
     _save_last_state(part_id, payload)

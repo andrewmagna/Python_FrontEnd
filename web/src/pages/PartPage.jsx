@@ -59,8 +59,8 @@ export default function PartPage() {
   const isRestoringLastStateRef = useRef(false);
   const zoneStateRef = useRef({});
 
-  const [sectionToggle, setSectionToggle] = useState(false);
   const [sectionState, setSectionState] = useState({ 1: false, 2: false, 3: false, 4: false, 5: false });
+  const sectionSourceRef = useRef({});
 
   const pathsRef = useRef(getDefaultPaths());
 
@@ -361,11 +361,19 @@ export default function PartPage() {
           .filter(([, v]) => v)
           .map(([k]) => Number(k));
 
+        const savedSources = data.section_sources && typeof data.section_sources === "object" ? data.section_sources : {};
+        const restoredSources = {};
+        for (const slot of activeSlotsToRestore) {
+          const src = savedSources[slot] ?? savedSources[String(slot)];
+          restoredSources[slot] = src === "auto" ? "auto" : "manual";
+        }
+
         if (!cancelled) {
           setPaths(nextPaths);
           setZoneState(nextZones);
           setSelectedRecipeId(nextSelectedRecipeId);
           setSectionState(nextSectionState);
+          sectionSourceRef.current = restoredSources;
         }
 
         if (debugOrientationOverride === "live" && opcConnected) {
@@ -492,6 +500,12 @@ export default function PartPage() {
     const nextSelectedRecipeId =
       overrides.selected_recipe_id ?? selectedRecipeId;
     const nextSectionState = overrides.section_state ?? sectionState;
+    const nextSectionSources = overrides.section_sources ?? sectionSourceRef.current;
+
+    const activeSources = {};
+    for (const [slot, active] of Object.entries(nextSectionState)) {
+      if (active) activeSources[slot] = nextSectionSources[slot] || "manual";
+    }
 
     return {
       orientation: [1, 2, 3, 4].includes(nextOrientation)
@@ -503,6 +517,7 @@ export default function PartPage() {
       sections: Object.entries(nextSectionState)
         .filter(([, v]) => v)
         .map(([k]) => Number(k)),
+      section_sources: activeSources,
       saved_at: Date.now(),
     };
   }
@@ -566,6 +581,7 @@ export default function PartPage() {
           description,
           paths,
           zones: zoneState,
+          sections: Object.entries(sectionState).filter(([, v]) => v).map(([k]) => Number(k)),
         }),
       });
 
@@ -743,6 +759,7 @@ export default function PartPage() {
     const partSections = part.sections || [];
     const next = { ...sectionState };
     let changed = false;
+    const clearedSlots = [];
 
     for (const [slotStr, active] of Object.entries(next)) {
       if (!active) continue;
@@ -751,10 +768,17 @@ export default function PartPage() {
       if (!s || s.orientation !== effectiveOrientation) {
         next[slot] = false;
         changed = true;
+        clearedSlots.push(slot);
       }
     }
 
     if (!changed) return;
+
+    if (clearedSlots.length > 0) {
+      const nextSources = { ...sectionSourceRef.current };
+      for (const slot of clearedSlots) delete nextSources[slot];
+      sectionSourceRef.current = nextSources;
+    }
 
     setSectionState(next);
 
@@ -775,31 +799,95 @@ export default function PartPage() {
     return zone.orientation === effectiveOrientation;
   }
 
+  function promoteSections(zoneMap, currentSectionState, partSections, orientation) {
+    const sections = { ...currentSectionState };
+    const zones = { ...zoneMap };
+    const promoted = [];
+    let changed;
+    do {
+      changed = false;
+      for (const s of partSections) {
+        if (s.orientation !== orientation) continue;
+        if (sections[s.slot]) continue;
+        if (s.zone_ids.length < 2) continue;
+        const isCovered = (zid) =>
+          zones[zid] || partSections.some((o) => sections[o.slot] && o.zone_ids.includes(zid));
+        if (s.zone_ids.every(isCovered)) {
+          sections[s.slot] = true;
+          promoted.push(s.slot);
+          for (const zid of s.zone_ids) {
+            if (zones[zid]) zones[zid] = false;
+          }
+          changed = true;
+        }
+      }
+    } while (changed);
+    return { zones, sections, promoted };
+  }
+
   async function toggleZone(id) {
     if (!validZoneIds.has(id)) return;
 
-    // Block zones locked by an active section
-    const isLocked = (part?.sections || []).some(
-      (s) => sectionState[s.slot] && s.zone_ids.includes(id),
+    const partSections = part?.sections || [];
+
+    // First: if zone belongs to any active non-auto section it is locked
+    const isLockedByManual = partSections.some(
+      (s) => sectionState[s.slot] && s.zone_ids.includes(id) && sectionSourceRef.current[s.slot] !== "auto",
     );
-    if (isLocked) return;
+    if (isLockedByManual) return;
+
+    // Then: if zone belongs to an active auto section → demote + re-promote
+    const autoSection = partSections.find(
+      (s) => sectionState[s.slot] && s.zone_ids.includes(id) && sectionSourceRef.current[s.slot] === "auto",
+    );
+    if (autoSection) {
+      const slot = autoSection.slot;
+      const previousZoneState = zoneState;
+      const previousSectionState = sectionState;
+      const demotedSections = { ...sectionState, [slot]: false };
+      const demotedZones = { ...zoneState };
+      for (const zid of autoSection.zone_ids) demotedZones[zid] = zid !== id;
+      const sourcesAfterDemote = { ...sectionSourceRef.current };
+      delete sourcesAfterDemote[slot];
+
+      // Re-run promotion — another section may now be complete
+      const { zones: promotedZones, sections: promotedSections, promoted } = promoteSections(demotedZones, demotedSections, partSections, effectiveOrientation);
+      const nextSources = { ...sourcesAfterDemote };
+      for (const s of promoted) nextSources[s] = "auto";
+      sectionSourceRef.current = nextSources;
+
+      const activeSectionSlots = Object.entries(promotedSections).filter(([, v]) => v).map(([k]) => Number(k));
+      setSectionState(promotedSections);
+      setZoneState(promotedZones);
+      setSelectedRecipeId(null);
+      persistLastState(buildLastStatePayload({ zones: promotedZones, section_state: promotedSections, selected_recipe_id: null, section_sources: nextSources }));
+      await pushZoneState(promotedZones, {
+        sections: activeSectionSlots,
+        onErrorRestore: () => {
+          setZoneState(previousZoneState);
+          setSectionState(previousSectionState);
+          sectionSourceRef.current = { ...sectionSourceRef.current, [slot]: "auto" };
+        },
+      });
+      return;
+    }
 
     const previousState = zoneState;
-    const nextState = {
-      ...zoneState,
-      [id]: !zoneState[id],
-    };
+    const rawNext = { ...zoneState, [id]: !zoneState[id] };
 
-    setZoneState(nextState);
+    // Auto-promote: if all member zones of a section are now on, activate it
+    const { zones: nextZones, sections: nextSections, promoted } = promoteSections(rawNext, sectionState, partSections, effectiveOrientation);
+
+    const nextSources = { ...sectionSourceRef.current };
+    for (const slot of promoted) nextSources[slot] = "auto";
+    sectionSourceRef.current = nextSources;
+
+    const activeSectionSlots = Object.entries(nextSections).filter(([, v]) => v).map(([k]) => Number(k));
+    setSectionState(nextSections);
+    setZoneState(nextZones);
     setSelectedRecipeId(null);
-    persistLastState(
-      buildLastStatePayload({
-        zones: nextState,
-        paths,
-        selected_recipe_id: null,
-      }),
-    );
-    await pushZoneState(nextState, { onErrorRestore: () => setZoneState(previousState) });
+    persistLastState(buildLastStatePayload({ zones: nextZones, section_state: nextSections, selected_recipe_id: null, section_sources: nextSources }));
+    await pushZoneState(nextZones, { sections: activeSectionSlots, onErrorRestore: () => { setZoneState(previousState); setSectionState(sectionState); } });
   }
 
   async function clearAll() {
@@ -808,6 +896,7 @@ export default function PartPage() {
     const clearedSectionState = { 1: false, 2: false, 3: false, 4: false, 5: false };
     const nextState = createEmptyZoneState();
 
+    sectionSourceRef.current = {};
     setZoneState(nextState);
     setSectionState(clearedSectionState);
     setSelectedRecipeId(null);
@@ -817,6 +906,7 @@ export default function PartPage() {
         paths,
         selected_recipe_id: null,
         section_state: clearedSectionState,
+        section_sources: {},
       }),
     );
     await pushZoneState(nextState, {
@@ -829,30 +919,37 @@ export default function PartPage() {
   }
 
   async function selectAllAvailable() {
-    const previousState = zoneState;
-    const nextState = { ...zoneState };
+    const previousZoneState = zoneState;
+    const previousSectionState = sectionState;
+    const partSections = part?.sections || [];
+    const rawNext = { ...zoneState };
 
     const lockedZoneIds = new Set();
-    for (const s of part?.sections || []) {
+    for (const s of partSections) {
       if (sectionState[s.slot]) {
         for (const zid of s.zone_ids) lockedZoneIds.add(zid);
       }
     }
 
     for (const zoneId of validZoneIds) {
-      if (!lockedZoneIds.has(zoneId)) nextState[zoneId] = true;
+      if (!lockedZoneIds.has(zoneId)) rawNext[zoneId] = true;
     }
 
-    setZoneState(nextState);
+    const { zones: nextZones, sections: nextSections, promoted } = promoteSections(rawNext, sectionState, partSections, effectiveOrientation);
+
+    const nextSources = { ...sectionSourceRef.current };
+    for (const slot of promoted) nextSources[slot] = "auto";
+    sectionSourceRef.current = nextSources;
+
+    const activeSectionSlots = Object.entries(nextSections).filter(([, v]) => v).map(([k]) => Number(k));
+    setSectionState(nextSections);
+    setZoneState(nextZones);
     setSelectedRecipeId(null);
-    persistLastState(
-      buildLastStatePayload({
-        zones: nextState,
-        paths,
-        selected_recipe_id: null,
-      }),
-    );
-    await pushZoneState(nextState, { onErrorRestore: () => setZoneState(previousState) });
+    persistLastState(buildLastStatePayload({ zones: nextZones, section_state: nextSections, selected_recipe_id: null, section_sources: nextSources }));
+    await pushZoneState(nextZones, {
+      sections: activeSectionSlots,
+      onErrorRestore: () => { setZoneState(previousZoneState); setSectionState(previousSectionState); },
+    });
   }
 
   async function toggleSection(slot) {
@@ -867,10 +964,20 @@ export default function PartPage() {
 
     const previousSectionState = sectionState;
     const previousZoneState = zoneState;
-    const nextSectionState = { ...sectionState, [slot]: !sectionState[slot] };
+    const isActivating = !sectionState[slot];
+    const nextSectionState = { ...sectionState, [slot]: isActivating };
     const activeSectionSlots = Object.entries(nextSectionState)
       .filter(([, v]) => v)
       .map(([k]) => Number(k));
+
+    // Track source: manual when activating, clear when deactivating
+    const nextSources = { ...sectionSourceRef.current };
+    if (isActivating) {
+      nextSources[slot] = "manual";
+    } else {
+      delete nextSources[slot];
+    }
+    sectionSourceRef.current = nextSources;
 
     setSectionState(nextSectionState);
 
@@ -888,33 +995,15 @@ export default function PartPage() {
     setZoneState(nextZones);
 
     setSelectedRecipeId(null);
-    persistLastState(
-      buildLastStatePayload({
-        section_state: nextSectionState,
-        zones: nextZones,
-        selected_recipe_id: null,
-      }),
-    );
+    persistLastState(buildLastStatePayload({ section_state: nextSectionState, zones: nextZones, selected_recipe_id: null, section_sources: nextSources }));
     await pushZoneState(nextZones, {
       sections: activeSectionSlots,
       onErrorRestore: () => {
         setSectionState(previousSectionState);
         setZoneState(previousZoneState);
+        sectionSourceRef.current = previousSectionState[slot] ? { ...sectionSourceRef.current, [slot]: nextSources[slot] } : sectionSourceRef.current;
       },
     });
-  }
-
-  async function handleSectionToggle(newValue) {
-    if (newValue === sectionToggle) return;
-    setSectionToggle(newValue);
-    if (!opcConnected) return;
-    try {
-      await fetch("/api/opc/zone-section-toggle", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ value: newValue }),
-      });
-    } catch {}
   }
 
   async function pushZoneState(nextZoneState, { sections: activeSectionSlots = null, onErrorRestore = null } = {}) {
@@ -1178,32 +1267,7 @@ export default function PartPage() {
           </Card>
 
           {/* RECIPE SETUP */}
-          <Card
-            title="Recipe Setup"
-            headerRight={
-              <div style={{ display: "flex", border: "1px solid #d1d5db", borderRadius: 8, overflow: "hidden" }}>
-                {[["zone", false], ["section", true]].map(([label, val]) => (
-                  <button
-                    key={label}
-                    onClick={() => handleSectionToggle(val)}
-                    style={{
-                      padding: "3px 9px",
-                      border: "none",
-                      borderRight: !val ? "1px solid #d1d5db" : "none",
-                      background: sectionToggle === val ? "#2563eb" : "#fff",
-                      color: sectionToggle === val ? "#fff" : "#6b7280",
-                      cursor: "pointer",
-                      fontSize: 11,
-                      fontWeight: 700,
-                      textTransform: "capitalize",
-                    }}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            }
-          >
+          <Card title="Recipe Setup">
             {paths.map((p, i) => (
               <div key={i}>
               <div
@@ -1434,20 +1498,89 @@ export default function PartPage() {
             boxSizing: "border-box",
             minHeight: 0,
             overflow: "hidden",
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
           }}
         >
-          <ZoneCanvas
-            imageUrl={part.image_url}
-            imageSize={part.image_size}
-            zones={part.zones}
-            zoneState={zoneState}
-            toggleZone={toggleZone}
-            hoveredZone={hoveredZone}
-            setHoveredZone={setHoveredZone}
-            isZoneAvailable={isZoneAvailable}
-            sections={part.sections || []}
-            sectionState={sectionState}
-          />
+          {/* Section buttons row */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6, flex: "0 0 auto" }}>
+            {[1, 2, 3, 4, 5].map((slot) => {
+              const section = (part.sections || []).find((s) => s.slot === slot);
+              if (!section) {
+                return (
+                  <button
+                    key={slot}
+                    disabled
+                    style={{
+                      padding: "6px 4px",
+                      border: "1px solid #e5e7eb",
+                      borderRadius: 8,
+                      background: "#f9fafb",
+                      color: "#d1d5db",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      cursor: "not-allowed",
+                      textAlign: "center",
+                    }}
+                  >
+                    —
+                  </button>
+                );
+              }
+              const isActive = !!sectionState[slot];
+              const isAvailable = section.orientation === effectiveOrientation;
+              const color = SLOT_COLORS[slot];
+              return (
+                <button
+                  key={slot}
+                  onClick={() => toggleSection(slot)}
+                  disabled={!isAvailable || !opcConnected || autoApplyBusy}
+                  title={
+                    !opcConnected
+                      ? "OPC disconnected"
+                      : !isAvailable
+                        ? `Needs orientation ${section.orientation === 1 ? "0°" : section.orientation === 2 ? "90°" : section.orientation === 3 ? "180°" : "270°"}`
+                        : section.name
+                  }
+                  style={{
+                    padding: "6px 4px",
+                    border: `2px solid ${isActive ? color.stroke : "#d1d5db"}`,
+                    borderRadius: 8,
+                    background: isActive ? color.active : "#fff",
+                    color: isActive ? color.text : "#374151",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: isAvailable && opcConnected && !autoApplyBusy ? "pointer" : "not-allowed",
+                    opacity: isAvailable ? 1 : 0.45,
+                    textAlign: "center",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {section.name || `S${slot}`}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Canvas fills remaining space */}
+          <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+            <ZoneCanvas
+              imageUrl={part.image_url}
+              imageSize={part.image_size}
+              zones={part.zones}
+              zoneState={zoneState}
+              toggleZone={toggleZone}
+              hoveredZone={hoveredZone}
+              setHoveredZone={setHoveredZone}
+              isZoneAvailable={isZoneAvailable}
+              sections={part.sections || []}
+              sectionState={sectionState}
+              sectionSources={sectionSourceRef.current}
+            />
+          </div>
         </div>
 
         <div
@@ -1525,70 +1658,6 @@ export default function PartPage() {
               >
                 Clear All
               </button>
-            </div>
-          </Card>
-
-          <Card title="Sections" style={{ flex: "0 0 auto" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
-              {[1, 2, 3, 4, 5].map((slot) => {
-                const section = (part.sections || []).find((s) => s.slot === slot);
-                if (!section) {
-                  return (
-                    <button
-                      key={slot}
-                      disabled
-                      style={{
-                        padding: "8px 4px",
-                        border: "1px solid #e5e7eb",
-                        borderRadius: 10,
-                        background: "#f9fafb",
-                        color: "#d1d5db",
-                        fontSize: 13,
-                        fontWeight: 700,
-                        cursor: "not-allowed",
-                        textAlign: "center",
-                      }}
-                    >
-                      —
-                    </button>
-                  );
-                }
-                const isActive = !!sectionState[slot];
-                const isAvailable = section.orientation === effectiveOrientation;
-                const color = SLOT_COLORS[slot];
-
-                return (
-                  <button
-                    key={slot}
-                    onClick={() => toggleSection(slot)}
-                    disabled={!isAvailable || !opcConnected || autoApplyBusy}
-                    title={
-                      !opcConnected
-                        ? "OPC disconnected"
-                        : !isAvailable
-                          ? `Needs orientation ${section.orientation === 1 ? "0°" : section.orientation === 2 ? "90°" : section.orientation === 3 ? "180°" : "270°"}`
-                          : section.name
-                    }
-                    style={{
-                      padding: "8px 4px",
-                      border: `2px solid ${isActive ? color.stroke : "#d1d5db"}`,
-                      borderRadius: 10,
-                      background: isActive ? color.active : "#fff",
-                      color: isActive ? color.text : "#374151",
-                      fontSize: 12,
-                      fontWeight: 700,
-                      cursor: isAvailable && opcConnected && !autoApplyBusy ? "pointer" : "not-allowed",
-                      opacity: isAvailable ? 1 : 0.45,
-                      textAlign: "center",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {section.name || `S${slot}`}
-                  </button>
-                );
-              })}
             </div>
           </Card>
 
@@ -1845,6 +1914,7 @@ function ZoneCanvas({
   isZoneAvailable,
   sections = [],
   sectionState = {},
+  sectionSources = {},
 }) {
   const containerRef = useRef(null);
   const [fitSize, setFitSize] = useState({ width: 0, height: 0 });
@@ -1960,10 +2030,8 @@ function ZoneCanvas({
               }
             }
 
-            const slotColor = lockedBySection ? SLOT_COLORS[lockedBySection] : null;
-
             const fill = lockedBySection
-              ? "transparent"
+              ? "none"
               : active
                 ? "rgba(22,163,74,0.55)"
                 : !available
@@ -1973,7 +2041,7 @@ function ZoneCanvas({
                     : "rgba(59,130,246,0.38)";
 
             const stroke = lockedBySection
-              ? slotColor.stroke
+              ? "none"
               : active
                 ? "#15803d"
                 : !available
@@ -1982,8 +2050,9 @@ function ZoneCanvas({
                     ? "#1d4ed8"
                     : "#2563eb";
 
-            const strokeWidth = lockedBySection ? "1.5" : active ? "3" : available ? "3" : "1.5";
-            const locked = !!lockedBySection || !available;
+            const strokeWidth = lockedBySection ? "0" : active ? "3" : available ? "3" : "1.5";
+            const isAutoSection = lockedBySection && sectionSources[lockedBySection] === "auto";
+            const locked = (!!lockedBySection && !isAutoSection) || !available;
 
             return (
               <polygon
@@ -1992,6 +2061,7 @@ function ZoneCanvas({
                 fill={fill}
                 stroke={stroke}
                 strokeWidth={strokeWidth}
+                pointerEvents="all"
                 onClick={() => {
                   if (locked) return;
                   toggleZone(z.zone_id);
