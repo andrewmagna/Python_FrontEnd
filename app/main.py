@@ -76,9 +76,33 @@ def _ensure_secret_key() -> None:
             admin_password_salt=cfg.admin_password_salt,
             secret_key=new_key,
             inactivity_timeout_minutes=cfg.inactivity_timeout_minutes,
+            bind_host=cfg.bind_host,
+            bind_port=cfg.bind_port,
         )
         save_config(new_cfg)
         print("Generated new random secret_key in config.json")
+
+
+def _migrate_bind_host() -> None:
+    # "127.0.0.1" is the stale auto-written default from the previous build; rewrite it
+    # to "0.0.0.0" so existing machines get network access without manual editing.
+    # Deliberate opt-out: set bind_host to "localhost" — uvicorn treats it as loopback-only
+    # and this function leaves any value other than the exact string "127.0.0.1" untouched.
+    cfg = load_config()
+    if cfg.bind_host == "127.0.0.1":
+        new_cfg = AppConfig(
+            parts_root=cfg.parts_root,
+            admin_username=cfg.admin_username,
+            admin_password=cfg.admin_password,
+            admin_password_hash=cfg.admin_password_hash,
+            admin_password_salt=cfg.admin_password_salt,
+            secret_key=cfg.secret_key,
+            inactivity_timeout_minutes=cfg.inactivity_timeout_minutes,
+            bind_host="0.0.0.0",
+            bind_port=cfg.bind_port,
+        )
+        save_config(new_cfg)
+        print('Migrated bind_host 127.0.0.1 -> 0.0.0.0 (set bind_host to "localhost" in config.json to keep the app local-only)')
 
 
 def _migrate_admin_password() -> None:
@@ -94,6 +118,8 @@ def _migrate_admin_password() -> None:
             admin_password_salt=salt,
             secret_key=cfg.secret_key,
             inactivity_timeout_minutes=cfg.inactivity_timeout_minutes,
+            bind_host=cfg.bind_host,
+            bind_port=cfg.bind_port,
         )
         save_config(new_cfg)
         print("Migrated admin password to hashed storage")
@@ -103,6 +129,7 @@ def _migrate_admin_password() -> None:
 async def lifespan(_: FastAPI):
     _ensure_secret_key()
     _migrate_admin_password()
+    _migrate_bind_host()
     connect()
     start_reconnect_loop()
     init_db()
@@ -443,6 +470,8 @@ def set_config(req: ConfigUpdateRequest) -> ConfigResponse:
         admin_password_salt=existing.admin_password_salt,
         secret_key=existing.secret_key,
         inactivity_timeout_minutes=existing.inactivity_timeout_minutes,
+        bind_host=existing.bind_host,
+        bind_port=existing.bind_port,
     )
     save_config(new_cfg)
     return ConfigResponse(parts_root=new_cfg.parts_root)
@@ -1289,10 +1318,9 @@ def serve_react_app(full_path: str):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(
-        app,
-        host="127.0.0.1",
-        port=8000,
-        log_config=None,
-        access_log=False,
-    )
+    cfg = load_config()
+    host = cfg.bind_host
+    port = cfg.bind_port
+    suffix = " (accessible from the network)" if host not in ("127.0.0.1", "localhost") else ""
+    print(f"ZoneSelect listening on http://{host}:{port}{suffix}")
+    uvicorn.run(app, host=host, port=port, log_config=None, access_log=False)

@@ -47,6 +47,8 @@ class AppConfig:
     admin_password_salt: str = ""
     secret_key: str = "dev_secret_change_me"
     inactivity_timeout_minutes: int = 15
+    bind_host: str = "0.0.0.0"
+    bind_port: int = 8000
 
     @staticmethod
     def default() -> "AppConfig":
@@ -84,6 +86,8 @@ def load_config() -> AppConfig:
         admin_password_salt = str(data.get("admin_password_salt") or "")
         secret_key = str(data.get("secret_key") or "dev_secret_change_me")
         inactivity_timeout_minutes = int(data.get("inactivity_timeout_minutes") or 15)
+        bind_host = str(data.get("bind_host") or "0.0.0.0")
+        bind_port = int(data.get("bind_port") or 8000)
         cfg = AppConfig(
             parts_root=parts_root,
             admin_username=admin_username,
@@ -92,6 +96,8 @@ def load_config() -> AppConfig:
             admin_password_salt=admin_password_salt,
             secret_key=secret_key,
             inactivity_timeout_minutes=inactivity_timeout_minutes,
+            bind_host=bind_host,
+            bind_port=bind_port,
         )
         _config_cache = cfg
         _config_cache_mtime = mtime
@@ -114,6 +120,8 @@ def save_config(cfg: AppConfig) -> None:
         "admin_username": cfg.admin_username,
         "secret_key": cfg.secret_key,
         "inactivity_timeout_minutes": cfg.inactivity_timeout_minutes,
+        "bind_host": cfg.bind_host,
+        "bind_port": cfg.bind_port,
     }
     if cfg.admin_password:
         payload["admin_password"] = cfg.admin_password
