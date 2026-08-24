@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import cv2
 
 from app.config_store import load_config
+from app.part_ids import ensure_part_ids, get_part_id, load_part_ids
 
 _scan_parts_cache: Optional[List[Dict[str, Any]]] = None
 _scan_parts_cache_ts: float = 0.0
@@ -135,6 +136,7 @@ def get_part(part_id: str) -> Dict[str, Any]:
     return {
         "part_id": part_id,
         "display_name": part_id.replace("_", " "),
+        "numeric_id": get_part_id(part_id),
         "configured": configured,
         "image_url": f"/parts/{part_id}/part.png",
         "overlay_url": f"/parts/{part_id}/overlay.png" if overlay_path.exists() else None,
@@ -187,6 +189,15 @@ def scan_parts() -> List[Dict[str, Any]]:
                 "configured": has_zones,
             }
         )
+
+    try:
+        id_map = ensure_part_ids([p["part_id"] for p in parts])
+    except Exception as e:
+        print(f"Failed ensuring part id registry: {e}")
+        id_map = load_part_ids()
+
+    for p in parts:
+        p["numeric_id"] = id_map.get(p["part_id"], 0)
 
     parts.sort(key=lambda p: p["display_name"].lower())
     _scan_parts_cache = parts

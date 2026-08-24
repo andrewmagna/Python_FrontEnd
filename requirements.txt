@@ -5,3 +5,4 @@ itsdangerous==2.2.0
 opencv-python-headless==4.10.0.84
 numpy==2.1.1
 opcua==0.98.13
+python-multipart==0.0.20

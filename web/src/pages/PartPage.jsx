@@ -1737,6 +1737,15 @@ export default function PartPage() {
                 >
                   Manage Users
                 </button>
+
+                <button
+                  onClick={() => {
+                    navigate(`/admin/parts?return=part`);
+                  }}
+                  style={buttonStyle()}
+                >
+                  Manage Parts
+                </button>
               </div>
             </Card>
           )}

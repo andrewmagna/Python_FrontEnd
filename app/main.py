@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import secrets
+import shutil
 import sys
 import threading
 import time
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import cv2
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -40,6 +41,7 @@ from app.opc_service import (
     get_paths,
     write_user_name,
     write_part_name,
+    write_part_id,
     write_recipe_name,
     write_zone_list,
     write_shift_start_time,
@@ -49,6 +51,15 @@ from app.opc_service import (
     get_program_tags,
 )
 from app.overlay_import import import_polygons_from_overlay
+from app.part_ids import (
+    MAX_PART_ID,
+    MIN_PART_ID,
+    assign_new_part_id,
+    get_part_id,
+    load_part_ids,
+    remove_part_id,
+    set_part_id,
+)
 from app.parts_service import get_part, scan_parts, invalidate_scan_cache, read_image_size
 
 
@@ -255,6 +266,10 @@ class UserUpsertRequest(BaseModel):
     display_name: str
     role: str
     card_id: str
+
+
+class UpdatePartNumericIdRequest(BaseModel):
+    numeric_id: int
 
 
 
@@ -526,6 +541,7 @@ def apply(req: ApplyRequest):
     full_map = _compose_full_zone_map(req.zones, active_slots, part_sections)
 
     write_zones(req.part_id, full_map)
+    write_part_id(get_part_id(req.part_id))
     zone_ids = [i for i in range(1, 41) if full_map.get(i) or full_map.get(str(i))]
     write_zone_list(zone_ids)
     write_recipe_name("")
@@ -590,6 +606,7 @@ def select_part_endpoint(req: SelectPartRequest):
         raise HTTPException(status_code=400, detail="display_name is required")
 
     write_part_name(selected_display_name)
+    write_part_id(get_part_id(req.part_id))
     return {"status": "ok"}
 
 
@@ -1200,6 +1217,7 @@ def load_recipe(part_id: str, req: LoadRecipeRequest):
 
     write_paths(recipe.get("paths", []))
     write_zones(part_id, full_map)
+    write_part_id(get_part_id(part_id))
     zone_ids = [i for i in range(1, 41) if full_map.get(i) or full_map.get(str(i))]
     write_zone_list(zone_ids)
     write_recipe_name(str(recipe.get("name") or ""))
@@ -1280,6 +1298,190 @@ def opc_orientation():
 @app.get("/api/opc/program-status", dependencies=[Depends(any_user_dep)])
 def opc_program_status():
     return {"connected": is_connected(), **get_program_tags()}
+
+
+_VALID_IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
+_INVALID_FOLDER_CHARS = set('<>:"/\\|?*')
+
+
+def _require_safe_part_folder(part_id: str) -> None:
+    if not part_id or part_id in {".", ".."} or "/" in part_id or "\\" in part_id:
+        raise HTTPException(status_code=400, detail="Invalid part name")
+
+
+def _validate_new_part_folder_name(name: str) -> str:
+    folder = str(name or "").strip().replace(" ", "_")
+    if not folder:
+        raise HTTPException(status_code=400, detail="Part name is required")
+    for ch in folder:
+        if ch in _INVALID_FOLDER_CHARS or ord(ch) < 32:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Part name contains a character not allowed in folder names: {ch!r}",
+            )
+    if folder in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid part name")
+    return folder
+
+
+def _save_upload_as_png(upload: UploadFile, dest: Path, label: str) -> None:
+    ext = Path(upload.filename or "").suffix.lower()
+    if ext not in _VALID_IMAGE_EXTS:
+        raise HTTPException(status_code=400, detail=f"{label} must be a .png, .jpg or .jpeg file")
+
+    data = upload.file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail=f"{label} file is empty")
+
+    if ext == ".png":
+        dest.write_bytes(data)
+        return
+
+    tmp = dest.parent / f"_upload_tmp{ext}"
+    tmp.write_bytes(data)
+    try:
+        img = cv2.imread(str(tmp), cv2.IMREAD_COLOR)
+        if img is None:
+            raise HTTPException(status_code=400, detail=f"{label} could not be decoded as an image")
+        if not cv2.imwrite(str(dest), img):
+            raise HTTPException(status_code=500, detail=f"Failed converting {label.lower()} to PNG")
+    finally:
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+
+
+@app.get("/api/admin/parts", dependencies=[Depends(supervisor_or_admin_dep)])
+def admin_list_parts():
+    return [
+        {
+            "part_id": p["part_id"],
+            "display_name": p["display_name"],
+            "numeric_id": p.get("numeric_id", 0),
+            "image_url": p["image_url"],
+        }
+        for p in scan_parts()
+    ]
+
+
+@app.put("/api/admin/parts/{part_id}/id", dependencies=[Depends(supervisor_or_admin_dep)])
+def admin_update_part_numeric_id(part_id: str, req: UpdatePartNumericIdRequest):
+    _require_safe_part_folder(part_id)
+
+    cfg = load_config()
+    part_dir = Path(cfg.parts_root) / part_id
+    if not part_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Part not found")
+
+    new_id = int(req.numeric_id)
+    if new_id < MIN_PART_ID or new_id > MAX_PART_ID:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Part ID must be an integer between {MIN_PART_ID} and {MAX_PART_ID}",
+        )
+
+    mapping = load_part_ids()
+    for other, other_id in mapping.items():
+        if other != part_id and other_id == new_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Part ID {new_id} is already used by '{other.replace('_', ' ')}'",
+            )
+
+    set_part_id(part_id, new_id)
+    invalidate_scan_cache()
+
+    if part_id == _active_part_id and is_connected():
+        try:
+            write_part_id(new_id)
+        except Exception as e:
+            print("Failed writing Part_ID after id change:", e)
+
+    return {"part_id": part_id, "numeric_id": new_id}
+
+
+@app.post("/api/admin/parts", dependencies=[Depends(supervisor_or_admin_dep)])
+def admin_add_part(
+    name: str = Form(...),
+    image: UploadFile = File(...),
+    overlay: Optional[UploadFile] = File(None),
+):
+    folder = _validate_new_part_folder_name(name)
+
+    cfg = load_config()
+    root = Path(cfg.parts_root)
+    if not root.is_dir():
+        raise HTTPException(status_code=500, detail="Parts root folder is not available")
+
+    part_dir = root / folder
+    if part_dir.exists():
+        raise HTTPException(status_code=400, detail=f"A part folder named '{folder}' already exists")
+
+    part_dir.mkdir(parents=True)
+    try:
+        _save_upload_as_png(image, part_dir / "part.png", "Image")
+        if overlay is not None and str(overlay.filename or "").strip():
+            _save_upload_as_png(overlay, part_dir / "overlay.png", "Overlay")
+    except HTTPException:
+        shutil.rmtree(part_dir, ignore_errors=True)
+        raise
+    except Exception as e:
+        shutil.rmtree(part_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Failed saving part files: {e}")
+
+    numeric_id = assign_new_part_id(folder)
+    invalidate_scan_cache()
+
+    return {
+        "part_id": folder,
+        "display_name": folder.replace("_", " "),
+        "numeric_id": numeric_id,
+        "image_url": f"/parts/{folder}/part.png",
+    }
+
+
+@app.delete("/api/admin/parts/{part_id}", dependencies=[Depends(supervisor_or_admin_dep)])
+def admin_remove_part(part_id: str):
+    global _active_part_id, _active_part_display_name
+
+    _require_safe_part_folder(part_id)
+
+    cfg = load_config()
+    part_dir = Path(cfg.parts_root) / part_id
+    if not part_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Part not found")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    removed_dir = _DATA_ROOT / "data" / "_removed" / f"{part_id}_{timestamp}"
+    removed_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # shutil.move handles parts_root living on another volume
+        shutil.move(str(part_dir), str(removed_dir / part_id))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed archiving part folder: {e}")
+
+    # Recipes and last-state share the file name <part>.json, so archive each
+    # under its own subfolder.
+    for label, src in (("recipes", _recipe_file(part_id)), ("last_state", _last_state_file(part_id))):
+        if src.exists():
+            try:
+                dest_dir = removed_dir / label
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dest_dir / src.name))
+            except Exception as e:
+                print(f"Failed archiving {label} for {part_id}: {e}")
+
+    remove_part_id(part_id)
+
+    if _active_part_id == part_id:
+        _active_part_id = None
+        _active_part_display_name = None
+        _persist_active_part()
+
+    invalidate_scan_cache()
+    return {"ok": True}
 
 
 @app.get("/parts/{file_path:path}")

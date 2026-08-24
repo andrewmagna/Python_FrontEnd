@@ -7,6 +7,7 @@ import AdminEditor from "./pages/AdminEditor.jsx";
 import AppHeader from "./components/AppHeader.jsx";
 import AdminRecipes from "./pages/AdminRecipes.jsx";
 import AdminUsers from "./pages/AdminUsers.jsx";
+import AdminParts from "./pages/AdminParts.jsx";
 import SummaryPage from "./pages/SummaryPage.jsx";
 import { SessionContext } from "./SessionContext.jsx";
 
@@ -150,6 +151,14 @@ export default function App() {
               element={
                 <ProtectedRoute session={session}>
                   <AdminUsers />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/parts"
+              element={
+                <ProtectedRoute session={session}>
+                  <AdminParts />
                 </ProtectedRoute>
               }
             />

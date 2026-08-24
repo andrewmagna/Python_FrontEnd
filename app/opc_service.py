@@ -13,6 +13,7 @@ connected = False
 _objects_node = None
 _orientation_node = None
 _part_name_node = None
+_part_id_node = None
 _user_name_node = None
 _recipe_name_node = None
 _zone_list_node = None
@@ -59,7 +60,7 @@ def _post_connect_setup() -> None:
 
 
 def connect():
-    global client, connected, _objects_node, _orientation_node, _part_name_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _shift_started_node, _force_reading_node, _program_started_node, _cycle_started_node, _cycle_completed_node, _opc_status_node, _path_pass_nodes, _path_grit_nodes, _path_force_nodes, _zone_command_nodes, _logged_missing_nodes, _browse_name_index, _index_built
+    global client, connected, _objects_node, _orientation_node, _part_name_node, _part_id_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _shift_started_node, _force_reading_node, _program_started_node, _cycle_started_node, _cycle_completed_node, _opc_status_node, _path_pass_nodes, _path_grit_nodes, _path_force_nodes, _zone_command_nodes, _logged_missing_nodes, _browse_name_index, _index_built
 
     load_config()
 
@@ -78,6 +79,7 @@ def connect():
     _objects_node = None
     _orientation_node = None
     _part_name_node = None
+    _part_id_node = None
     _user_name_node = None
     _recipe_name_node = None
     _zone_list_node = None
@@ -121,6 +123,7 @@ def connect():
         _objects_node = None
         _orientation_node = None
         _part_name_node = None
+        _part_id_node = None
         _user_name_node = None
         _recipe_name_node = None
         _zone_list_node = None
@@ -256,7 +259,7 @@ def _default_paths():
 
 
 def _get_cached_node(cache_name: str, target_name: str):
-    global _orientation_node, _part_name_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _shift_started_node, _force_reading_node, _program_started_node, _cycle_started_node, _cycle_completed_node, _opc_status_node
+    global _orientation_node, _part_name_node, _part_id_node, _user_name_node, _recipe_name_node, _zone_list_node, _shift_start_time_node, _shift_end_time_node, _shift_completed_node, _shift_started_node, _force_reading_node, _program_started_node, _cycle_started_node, _cycle_completed_node, _opc_status_node
 
     _require_connection()
 
@@ -265,6 +268,9 @@ def _get_cached_node(cache_name: str, target_name: str):
 
     if cache_name == "part_name" and _part_name_node is not None:
         return _part_name_node
+
+    if cache_name == "part_id" and _part_id_node is not None:
+        return _part_id_node
 
     if cache_name == "user_name" and _user_name_node is not None:
         return _user_name_node
@@ -312,6 +318,8 @@ def _get_cached_node(cache_name: str, target_name: str):
         _orientation_node = node
     elif cache_name == "part_name":
         _part_name_node = node
+    elif cache_name == "part_id":
+        _part_id_node = node
     elif cache_name == "user_name":
         _user_name_node = node
     elif cache_name == "recipe_name":
@@ -681,6 +689,16 @@ def write_part_name(part_id: str):
         return
 
     _set_node_value(part_node, str(part_id), "part_name")
+
+def write_part_id(value: int):
+    _require_connection()
+
+    part_id_node = _get_cached_node("part_id", "Part_ID")
+    if part_id_node is None:
+        print("Skipping missing OPC node: Part_ID")
+        return
+
+    _set_node_value(part_id_node, int(value), "Part_ID")
 
 def write_recipe_name(recipe_name: str):
     _require_connection()

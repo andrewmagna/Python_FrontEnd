@@ -123,8 +123,8 @@ export default function AppHeader() {
           {session && (session.role === "admin" || session.role === "supervisor") && (
             <button
               onClick={() => navigate("/admin/users?return=grid")}
-              title="Settings"
-              aria-label="Settings"
+              title="Manage Users"
+              aria-label="Manage Users"
               style={{
                 width: 40,
                 height: 40,
@@ -142,7 +142,32 @@ export default function AppHeader() {
                 lineHeight: 1,
               }}
             >
-              <SettingsIcon />
+              <PersonIcon />
+            </button>
+          )}
+          {session && (session.role === "admin" || session.role === "supervisor") && (
+            <button
+              onClick={() => navigate("/admin/parts?return=grid")}
+              title="Manage Parts"
+              aria-label="Manage Parts"
+              style={{
+                width: 40,
+                height: 40,
+                minWidth: 40,
+                minHeight: 40,
+                padding: 0,
+                borderRadius: 10,
+                border: "1px solid #e5e7eb",
+                background: "#ffffff",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                lineHeight: 1,
+              }}
+            >
+              <DoorIcon />
             </button>
           )}
           {session && (
@@ -222,7 +247,37 @@ function MonitorIcon() {
   );
 }
 
-function SettingsIcon() {
+function PersonIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      style={{ display: "block" }}
+    >
+      <circle
+        cx="12" cy="8" r="4"
+        fill="none"
+        stroke="#2563eb"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4 20c0-3.6 3.6-5.5 8-5.5s8 1.9 8 5.5"
+        fill="none"
+        stroke="#2563eb"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function DoorIcon() {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
@@ -233,19 +288,21 @@ function SettingsIcon() {
       style={{ display: "block" }}
     >
       <path
-        d="M12 8.75A3.25 3.25 0 1 0 12 15.25A3.25 3.25 0 1 0 12 8.75Z"
+        d="M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16"
         fill="none"
         stroke="#2563eb"
         strokeWidth="2"
-      />
-      <path
-        d="M19.4 15a1 1 0 0 0 .2 1.1l.1.1a1 1 0 0 1 0 1.4l-1.2 1.2a1 1 0 0 1-1.4 0l-.1-.1a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.9V20a1 1 0 0 1-1 1h-1.7a1 1 0 0 1-1-1v-.2a1 1 0 0 0-.6-.9 1 1 0 0 0-1.1.2l-.1.1a1 1 0 0 1-1.4 0l-1.2-1.2a1 1 0 0 1 0-1.4l.1-.1a1 1 0 0 0 .2-1.1 1 1 0 0 0-.9-.6H4a1 1 0 0 1-1-1v-1.7a1 1 0 0 1 1-1h.2a1 1 0 0 0 .9-.6 1 1 0 0 0-.2-1.1l-.1-.1a1 1 0 0 1 0-1.4l1.2-1.2a1 1 0 0 1 1.4 0l.1.1a1 1 0 0 0 1.1.2 1 1 0 0 0 .6-.9V4a1 1 0 0 1 1-1h1.7a1 1 0 0 1 1 1v.2a1 1 0 0 0 .6.9 1 1 0 0 0 1.1-.2l.1-.1a1 1 0 0 1 1.4 0l1.2 1.2a1 1 0 0 1 0 1.4l-.1.1a1 1 0 0 0-.2 1.1 1 1 0 0 0 .9.6H20a1 1 0 0 1 1 1v1.7a1 1 0 0 1-1 1h-.2a1 1 0 0 0-.9.6Z"
-        fill="none"
-        stroke="#2563eb"
-        strokeWidth="1.7"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+      <path
+        d="M3 21h18"
+        fill="none"
+        stroke="#2563eb"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <circle cx="15" cy="12" r="1.2" fill="#2563eb" stroke="none" />
     </svg>
   );
 }
