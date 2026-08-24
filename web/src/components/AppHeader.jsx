@@ -287,22 +287,31 @@ function DoorIcon() {
       aria-hidden="true"
       style={{ display: "block" }}
     >
+      {/* car door in profile: slanted A-pillar top-left, squared rear edge */}
       <path
-        d="M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16"
+        d="M4 20 V12 C4 7.5 7 4 11.5 4 H19 a1 1 0 0 1 1 1 v14 a1 1 0 0 1 -1 1 Z"
         fill="none"
         stroke="#2563eb"
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+      {/* window */}
       <path
-        d="M3 21h18"
+        d="M7.5 11 C7.8 8.5 9.5 7 11.8 7 H16.5 V11 Z"
+        fill="none"
+        stroke="#2563eb"
+        strokeWidth="1.7"
+        strokeLinejoin="round"
+      />
+      {/* handle */}
+      <path
+        d="M13.5 14.5 h4"
         fill="none"
         stroke="#2563eb"
         strokeWidth="2"
         strokeLinecap="round"
       />
-      <circle cx="15" cy="12" r="1.2" fill="#2563eb" stroke="none" />
     </svg>
   );
 }
